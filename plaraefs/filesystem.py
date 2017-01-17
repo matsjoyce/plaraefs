@@ -25,6 +25,7 @@ DATA_BLOCK_SIZE = TOTAL_BLOCK_SIZE - IV_SIZE - TAG_SIZE
 
 FILE_ID_SIZE = 8
 BLOCK_ID_SIZE = 8
+WRITE_ITER_BUFFER_SIZE = 8
 
 # Util contains the following items:
 # - free_blocks
@@ -111,6 +112,7 @@ class FileSystem:
         self.file_name_cache = self.reverse_file_name_cache = None
         self.file_name_version = -1
         self.versions_to_increment = set()
+        self.number_of_active_write_iterators = 0
 
         self.is_in_exclusive_transaction = False
         self.block_reads = self.block_writes = 0
@@ -510,58 +512,105 @@ class FileSystem:
         self.increment_version(b"files")
 
     @check_types
-    @with_exclusive_transaction
-    def write_file(self, file_id: int, data: bytes, start: int=0):
-        current_blocks = self.file_blocks(file_id)
-        metadata = self.file_metadata(file_id)
+    def write_file_iter(self, file_id: int, start: int=0):
+        self.number_of_active_write_iterators += 1
+        files_version = data_version = -1
 
-        end = start + len(data)
-        current_blocks.extend(self.allocate_blocks(ceildiv(end, DATA_BLOCK_SIZE) - len(current_blocks)))
+        unflushed_data = []
+        unflushed_data_length = 0
+        unflushed_data_first_item_start = 0
+        flush_now = False
 
-        first_block, first_block_start = divmod(start, DATA_BLOCK_SIZE)
-        last_block, last_block_end = divmod(end, DATA_BLOCK_SIZE)
-        data_current_index = 0
+        next_block_length = ceildiv(start, DATA_BLOCK_SIZE) * DATA_BLOCK_SIZE - start
+        if next_block_length == 0:
+            next_block_length = DATA_BLOCK_SIZE
 
-        for block_index in range(first_block, last_block + 1):
-            block_data_start = 0
-            block_data_end = DATA_BLOCK_SIZE
-            if block_index == first_block:
-                block_data_start = first_block_start
-            if block_index == last_block:
-                block_data_end = last_block_end
+        while True:
+            if flush_now:
+                self.number_of_active_write_iterators -= 1
+                return
 
-            needed_data = block_data_end - block_data_start
-            block_data = data[data_current_index:data_current_index + needed_data]
-            data_current_index += needed_data
-            if needed_data != DATA_BLOCK_SIZE:
-                old_block_data = self.read_block(current_blocks[block_index])
-                if old_block_data is not None:
-                    block_data = b"".join([old_block_data[:block_data_start], block_data, old_block_data[block_data_end:]])
-                else:
-                    block_data = b"".join([b"\0" * block_data_start, block_data, b"\0" * (DATA_BLOCK_SIZE - block_data_end)])
-            assert len(block_data) == DATA_BLOCK_SIZE
+            data = yield
+            if data is None:
+                flush_now = True
+            else:
+                unflushed_data.append(data)
+                unflushed_data_length += len(data)
 
-            self.write_block(current_blocks[block_index], block_data)
+            unflushed_end = start + unflushed_data_length
+            buffer_size = next_block_length + (WRITE_ITER_BUFFER_SIZE - 1) * DATA_BLOCK_SIZE
+            if unflushed_data_length < buffer_size and not (flush_now and unflushed_data_length):
+                continue
 
-        self.set_file_blocks(file_id, current_blocks)
-        metadata["size"] = max(metadata["size"], end)
-        self.set_file_metadata(file_id, metadata)
+            with self.exclusive_transaction():
+                reload, files_version = self.new_version(b"files", files_version)
+                if reload:
+                    current_blocks = self.file_blocks(file_id)
+                    metadata = self.file_metadata(file_id)
+
+                while unflushed_data_length >= next_block_length or flush_now and unflushed_data_length:
+                    block_id, offset = divmod(start, DATA_BLOCK_SIZE)
+                    collected_length = 0
+                    collected_data = []
+                    while collected_length < next_block_length and unflushed_data_length:
+                        wanted_length = next_block_length - collected_length
+                        chunk = unflushed_data[0]
+
+                        if len(chunk) - unflushed_data_first_item_start <= wanted_length:
+                            unflushed_data.pop(0)
+                            collected_chunk = chunk[unflushed_data_first_item_start:]
+                            unflushed_data_first_item_start = 0
+                        else:
+                            collected_chunk = chunk[unflushed_data_first_item_start:unflushed_data_first_item_start + wanted_length]
+                            unflushed_data_first_item_start += len(collected_chunk)
+                            assert unflushed_data_first_item_start < len(chunk)
+
+                        collected_data.append(collected_chunk)
+                        collected_length += len(collected_chunk)
+                        unflushed_data_length -= len(collected_chunk)
+
+                    block_data = b"".join(collected_data)
+                    assert len(block_data) == next_block_length or flush_now
+                    assert offset + next_block_length == DATA_BLOCK_SIZE or flush_now
+
+                    # since we are allocating, allocate all the blocks we need to flush all current data
+                    extra_blocks_needed = ceildiv(unflushed_end, DATA_BLOCK_SIZE) - len(current_blocks)
+                    if extra_blocks_needed > 0:
+                        current_blocks.extend(self.allocate_blocks(extra_blocks_needed))
+                        self.set_file_blocks(file_id, current_blocks)
+                    assert len(current_blocks) >= block_id + 1
+                    start += next_block_length
+
+                    if offset != 0 or len(block_data) != next_block_length:
+                        old_block_data = self.read_block(current_blocks[block_id])
+                        add_on_end = DATA_BLOCK_SIZE - offset - len(block_data)
+                        start -= add_on_end
+                        if old_block_data is None:
+                            block_data = b"".join([b"\0" * offset, block_data, b"\0" * add_on_end])
+                        else:
+                            block_data = b"".join([old_block_data[:offset], block_data, old_block_data[-add_on_end:]])
+
+                    self.write_block(current_blocks[block_id], block_data)
+                    if start > metadata["size"]:
+                        metadata["size"] = start
+                        self.set_file_metadata(file_id, metadata)
+
+                    next_block_length = ceildiv(start, DATA_BLOCK_SIZE) * DATA_BLOCK_SIZE - start
+                    if next_block_length == 0:
+                        next_block_length = DATA_BLOCK_SIZE
 
     @check_types
     @with_db_connected
     def read_file_iter(self, file_id: int, start: int=0):
-        current_blocks = self.file_blocks(file_id)
-        metadata = self.file_metadata(file_id)
-        _, files_version = self.new_version(b"files", -1)
-        _, data_version = self.new_version(b"data", -1)
-        current_block = block_data = None
+        files_version = data_version = -1
 
         data = b""
         data_chunks = []
         while True:
             amount = yield data
-            if amount is None:
-                return
+            if amount < 1:
+                yield b""
+                continue
 
             reload, files_version = self.new_version(b"files", files_version)
             if reload:
@@ -573,8 +622,18 @@ class FileSystem:
                 current_block = block_data = None
 
             end = min(start + amount, metadata["size"])
+            if start == end:
+                yield b""
+                continue
+
             first_block, first_block_start = divmod(start, DATA_BLOCK_SIZE)
             last_block, last_block_end = divmod(end, DATA_BLOCK_SIZE)
+            if last_block_end == 0:
+                last_block -= 1
+                last_block_end = DATA_BLOCK_SIZE
+
+            assert first_block <= last_block < len(current_blocks)
+            assert end - start == DATA_BLOCK_SIZE * (last_block - first_block - 1) + DATA_BLOCK_SIZE - first_block_start + last_block_end
 
             for block_index in range(first_block, last_block + 1):
                 block_data_start = 0
@@ -595,6 +654,19 @@ class FileSystem:
             assert len(data) == end - start
             data_chunks.clear()
             start = end
+
+    @check_types
+    @with_exclusive_transaction
+    def write_file(self, file_id: int, data: bytes, start: int=0):
+        writer = self.write_file_iter(file_id, start)
+        next(writer)
+        writer.send(data)
+        try:
+            writer.send(None)
+        except StopIteration:
+            pass
+        else:
+            raise RuntimeError("Writer did not finish")
 
     @check_types
     @with_db_connected

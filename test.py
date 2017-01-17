@@ -12,6 +12,12 @@ from plaraefs.filesystem import FileSystem
 args = docopt.docopt(__doc__)
 
 big_test_times = 25
+data_multiplier = 2**20
+chunk_size = 5 * 2 ** 10 - 3
+
+#big_test_times = 1
+#data_multiplier = 2**10
+#chunk_size = 500
 
 if args["--withinit"]:
     FileSystem.initialise("sandbox/a.plaraefs")
@@ -77,22 +83,44 @@ persist.write(str(int(old) + 1))
 
 
 big = fs.open("big", create=True)
-data = "asdfghjkl" * 2**20
+data = "asdfghjkl" * data_multiplier
 
-print("Writing", len(data) * big_test_times / 2 ** 20, "MiB")
+print("Writing", len(data) * big_test_times / data_multiplier, "MiB")
 t = time.time()
 for i in range(big_test_times):
     big.write(data)
 diff = time.time() - t
-print("Complete", diff, "seconds", len(data) / diff / 2 ** 20 * big_test_times, "MiB/sec")
+print("Complete", diff, "seconds", len(data) / diff / data_multiplier * big_test_times, "MiB/sec")
 
-print("Reading", len(data) * big_test_times / 2 ** 20, "MiB")
+print("Reading", len(data) * big_test_times / data_multiplier, "MiB")
 t = time.time()
 for i in range(big_test_times):
     rdata = big.read(len(data))
     assert rdata == data
 diff = time.time() - t
-print("Complete", diff, "seconds", len(data) / diff / 2 ** 20 * big_test_times, "MiB/sec")
+print("Complete", diff, "seconds", len(data) / diff / data_multiplier * big_test_times, "MiB/sec")
+
+data = "ASDFGHJKL" * data_multiplier
+
+print("Writing chunk test")
+before = fs.block_writes
+writer = fs.write_file_iter(big.file_id)
+next(writer)
+position = 0
+
+t = time.time()
+while position < len(data):
+    writer.send(data[position:position + chunk_size].encode())
+    position += chunk_size
+try:
+    writer.send(None)
+except StopIteration:
+    pass
+else:
+    err_writer_did_not_finish
+diff = time.time() - t
+print("Complete", diff, "seconds", len(data) / diff / data_multiplier, "MiB/sec")
+assert fs.block_writes == len(fs.file_blocks(big.file_id)) + before
 
 print("Reading chunk test")
 reader = fs.read_file_iter(big.file_id)
@@ -100,10 +128,14 @@ next(reader)
 ds = []
 before = fs.block_reads
 d = True
+t = time.time()
 while d:
-    d = reader.send(500)
+    d = reader.send(chunk_size)
     ds.append(d)
+diff = time.time() - t
+print("Complete", diff, "seconds", len(data) / diff / data_multiplier, "MiB/sec")
 ds = b"".join(ds).decode()
+
 assert ds == data
 assert fs.block_reads == len(fs.file_blocks(big.file_id)) + before
 
