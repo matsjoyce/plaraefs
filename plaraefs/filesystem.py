@@ -11,17 +11,17 @@ import sys
 import threading
 
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import padding as symmetric_padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-FS_EXT = ".plarsfs"
+FS_EXT = ".plaraefs"
 FS_DB_EXT = FS_EXT + "db"
 
 TOTAL_BLOCK_SIZE = 4 * 2 ** 10
 KEY_SIZE = 32  # 256 bit keys
 IV_SIZE = 16  # 128 bit IV
+TAG_SIZE = 16  # 128 bit AEAD tag
 UNINITALISED_IV = b"\0" * IV_SIZE
-DATA_BLOCK_SIZE = TOTAL_BLOCK_SIZE - IV_SIZE
+DATA_BLOCK_SIZE = TOTAL_BLOCK_SIZE - IV_SIZE - TAG_SIZE
 
 FILE_ID_SIZE = 8
 BLOCK_ID_SIZE = 8
@@ -100,36 +100,24 @@ class FileSystem:
         return int.from_bytes(os.urandom(FILE_ID_SIZE), "little", signed=True)
 
     @check_types
-    def encrypt(self, plaintext: bytes, with_padding=True):
+    def encrypt(self, plaintext: bytes):
         iv = UNINITALISED_IV
         while iv == UNINITALISED_IV:
             iv = os.urandom(IV_SIZE)
 
-        if with_padding:
-            padder = symmetric_padding.PKCS7(algorithms.AES.block_size).padder()
-            paddedtext = padder.update(plaintext) + padder.finalize()
-        else:
-            paddedtext = plaintext
-            assert len(paddedtext) % IV_SIZE == 0
-
-        cipher = Cipher(algorithms.AES(self.key), modes.CBC(iv), backend=backend)
+        cipher = Cipher(algorithms.AES(self.key), modes.GCM(iv), backend=backend)
         encryptor = cipher.encryptor()
-        return iv + encryptor.update(paddedtext) + encryptor.finalize()
+        ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+        return iv + ciphertext + encryptor.tag
 
     @check_types
-    def decrypt(self, cyphertext: bytes, with_padding=True):
-        assert len(cyphertext) >= IV_SIZE
-        iv, cyphertext = cyphertext[:IV_SIZE], cyphertext[IV_SIZE:]
+    def decrypt(self, ciphertext: bytes):
+        assert len(ciphertext) >= IV_SIZE + TAG_SIZE
+        iv, ciphertext, tag = ciphertext[:IV_SIZE], ciphertext[IV_SIZE:-TAG_SIZE], ciphertext[-TAG_SIZE:]
 
-        cipher = Cipher(algorithms.AES(self.key), modes.CBC(iv), backend=backend)
+        cipher = Cipher(algorithms.AES(self.key), modes.GCM(iv, tag), backend=backend)
         decryptor = cipher.decryptor()
-        paddedtext = decryptor.update(cyphertext) + decryptor.finalize()
-
-        if with_padding:
-            unpadder = symmetric_padding.PKCS7(algorithms.AES.block_size).unpadder()
-            plaintext = unpadder.update(paddedtext) + unpadder.finalize()
-        else:
-            plaintext = paddedtext
+        plaintext = decryptor.update(ciphertext) + decryptor.finalize()
         return plaintext
 
     @staticmethod
@@ -243,31 +231,31 @@ class FileSystem:
     @check_types
     @with_db_connected
     def file_blocks(self, file_id: int):
-        cypher_raw_blocks, = self.conn.execute("select blocks from Files where id = ?", (file_id,)).fetchone()
-        raw_blocks = self.decrypt(cypher_raw_blocks)
+        cipher_raw_blocks, = self.conn.execute("select blocks from Files where id = ?", (file_id,)).fetchone()
+        raw_blocks = self.decrypt(cipher_raw_blocks)
         return self.decode_block_ids(raw_blocks)
 
     @check_types
     @with_db_connected
     def set_file_blocks(self, file_id: int, blocks):
         raw_blocks = self.encode_block_ids(blocks)
-        cypher_raw_blocks = self.encrypt(raw_blocks)
-        self.conn.execute("update Files set blocks = ? where id = ?", (cypher_raw_blocks, file_id))
+        cipher_raw_blocks = self.encrypt(raw_blocks)
+        self.conn.execute("update Files set blocks = ? where id = ?", (cipher_raw_blocks, file_id))
 
     @with_db_connected
     def free_blocks(self):
-        cypher_raw_blocks, = self.conn.execute("select value from Util where key = ?", (b"free_blocks",)).fetchone()
-        if cypher_raw_blocks == b"":
+        cipher_raw_blocks, = self.conn.execute("select value from Util where key = ?", (b"free_blocks",)).fetchone()
+        if cipher_raw_blocks == b"":
             return self.make_block_id_container()
-        raw_blocks = self.decrypt(cypher_raw_blocks)
+        raw_blocks = self.decrypt(cipher_raw_blocks)
         assert len(raw_blocks) % BLOCK_ID_SIZE == 0
         return self.decode_block_ids(raw_blocks)
 
     @with_db_connected
     def set_free_blocks(self, blocks):
         raw_blocks = self.encode_block_ids(blocks)
-        cypher_raw_blocks = self.encrypt(raw_blocks)
-        self.conn.execute("update Util set value = ? where key = ?", (cypher_raw_blocks, b"free_blocks"))
+        cipher_raw_blocks = self.encrypt(raw_blocks)
+        self.conn.execute("update Util set value = ? where key = ?", (cipher_raw_blocks, b"free_blocks"))
 
     def total_blocks(self):
         size = self.fname.stat().st_size
@@ -305,13 +293,13 @@ class FileSystem:
         # return None if the block is not initialised
         with self.main_file() as f:
             f.seek(self.block_start(block_id))
-            cypherdata = f.read(TOTAL_BLOCK_SIZE)
+            cipherdata = f.read(TOTAL_BLOCK_SIZE)
 
-        assert len(cypherdata) == TOTAL_BLOCK_SIZE
-        if cypherdata[:IV_SIZE] == UNINITALISED_IV:
+        assert len(cipherdata) == TOTAL_BLOCK_SIZE
+        if cipherdata[:IV_SIZE] == UNINITALISED_IV:
             return None
 
-        data = self.decrypt(cypherdata, with_padding=False)
+        data = self.decrypt(cipherdata)
         assert len(data) == DATA_BLOCK_SIZE
         return data
 
@@ -319,12 +307,12 @@ class FileSystem:
     @with_db_connected
     def write_block(self, block_id: int, data: bytes):
         assert len(data) == DATA_BLOCK_SIZE
-        cypherdata = self.encrypt(data, with_padding=False)
-        assert len(cypherdata) == TOTAL_BLOCK_SIZE
+        cipherdata = self.encrypt(data)
+        assert len(cipherdata) == TOTAL_BLOCK_SIZE
 
         with self.main_file() as f:
             f.seek(self.block_start(block_id))
-            f.write(cypherdata)
+            f.write(cipherdata)
 
     @check_types
     @with_db_connected
@@ -343,8 +331,8 @@ class FileSystem:
         if current_file_name_version != self.file_name_version:
             self.file_name_cache = {}
             self.reverse_file_name_cache = collections.defaultdict(set)
-            for file_id, cyphername in self.conn.execute("select id, name from Filenames"):
-                name = self.decrypt(cyphername)
+            for file_id, ciphername in self.conn.execute("select id, name from Filenames"):
+                name = self.decrypt(ciphername)
                 self.file_name_cache[name] = file_id
                 self.reverse_file_name_cache[file_id].add(name)
 
@@ -384,11 +372,11 @@ class FileSystem:
     @check_types
     @with_exclusive_transaction
     def remove_file_name(self, file_id: int, name: bytes):
-        cypher_names = self.conn.execute("select name from Filenames where id = ?", (file_id,))
-        for cypher_name, in cypher_names:
-            if self.decrypt(cypher_name) == name:
+        cipher_names = self.conn.execute("select name from Filenames where id = ?", (file_id,))
+        for cipher_name, in cipher_names:
+            if self.decrypt(cipher_name) == name:
                 self.conn.execute("delete from Filenames where id = ? and name = ?",
-                                  (file_id, cypher_name))
+                                  (file_id, cipher_name))
                 self.increment_file_name_cache()
                 return
         raise FileNotFoundError(name)
@@ -403,9 +391,9 @@ class FileSystem:
         else:
             raise FileExistsError()
 
-        cypher_name = self.encrypt(name)
+        cipher_name = self.encrypt(name)
 
-        self.conn.execute("insert into Filenames (name, id) values (?, ?)", (cypher_name, file_id))
+        self.conn.execute("insert into Filenames (name, id) values (?, ?)", (cipher_name, file_id))
         self.increment_file_name_cache()
 
     @check_types
@@ -426,17 +414,17 @@ class FileSystem:
         # just in case we have a collision...
         while file_id in current_ids:
             file_id = self.generate_file_id()
-        cypher_name = self.encrypt(name)
-        cypher_blocks = self.encrypt(b"")
+        cipher_name = self.encrypt(name)
+        cipher_blocks = self.encrypt(b"")
         metadata = {"size": 0
                     }
         serialised_metadata = msgpack.dumps(metadata)
-        cypher_metadata = self.encrypt(serialised_metadata)
+        cipher_metadata = self.encrypt(serialised_metadata)
 
         self.conn.execute("insert into Files (id, metadata, blocks) values (?, ?, ?)",
-                          (file_id, cypher_metadata, cypher_blocks))
+                          (file_id, cipher_metadata, cipher_blocks))
 
-        self.conn.execute("insert into Filenames (name, id) values (?, ?)", (cypher_name, file_id))
+        self.conn.execute("insert into Filenames (name, id) values (?, ?)", (cipher_name, file_id))
         self.increment_file_name_cache()
 
         return file_id
@@ -459,16 +447,16 @@ class FileSystem:
     @check_types
     @with_db_connected
     def file_metadata(self, file_id: int):
-        cypher_metadata, = self.conn.execute("select metadata from Files where id = ?", (file_id,)).fetchone()
-        serialised_metadata = self.decrypt(cypher_metadata)
+        cipher_metadata, = self.conn.execute("select metadata from Files where id = ?", (file_id,)).fetchone()
+        serialised_metadata = self.decrypt(cipher_metadata)
         return msgpack.loads(serialised_metadata, use_list=False, encoding="utf-8")
 
     @check_types
     @with_exclusive_transaction
     def set_file_metadata(self, file_id: int, metadata):
         serialised_metadata = msgpack.dumps(metadata, use_bin_type=True)
-        cypher_metadata = self.encrypt(serialised_metadata)
-        self.conn.execute("update Files set metadata = ? where id = ?", (cypher_metadata, file_id))
+        cipher_metadata = self.encrypt(serialised_metadata)
+        self.conn.execute("update Files set metadata = ? where id = ?", (cipher_metadata, file_id))
 
     @check_types
     @with_exclusive_transaction
@@ -477,9 +465,7 @@ class FileSystem:
         metadata = self.file_metadata(file_id)
 
         end = start + len(data)
-        print(f"Write from {start} to {end}", ceildiv(end, DATA_BLOCK_SIZE))
         current_blocks.extend(self.allocate_blocks(ceildiv(end, DATA_BLOCK_SIZE) - len(current_blocks)))
-        print("have", len(current_blocks), "blocks")
 
         first_block, first_block_start = divmod(start, DATA_BLOCK_SIZE)
         last_block, last_block_end = divmod(end, DATA_BLOCK_SIZE)

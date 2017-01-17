@@ -11,8 +11,10 @@ from plaraefs.filesystem import FileSystem
 
 args = docopt.docopt(__doc__)
 
+big_test_times = 25
+
 if args["--withinit"]:
-    FileSystem.initialise("sandbox/a.plarsfs")
+    FileSystem.initialise("sandbox/a.plaraefs")
 
 
 def print_general_info(fs):
@@ -27,7 +29,7 @@ sandbox = pathlib.Path() / "sandbox"
 if not sandbox.exists():
     sandbox.mkdir()
 
-fs = FileSystem(sandbox / "a.plarsfs", b"a" * 32)
+fs = FileSystem(sandbox / "a.plaraefs", b"a" * 32)
 
 print_general_info(fs)
 
@@ -77,25 +79,22 @@ persist.write(str(int(old) + 1))
 big = fs.open("big", create=True)
 data = "asdfghjkl" * 2**20
 
-print("Writing", len(data), "bytes")
+print("Writing", len(data) * big_test_times / 2 ** 20, "MiB")
 t = time.time()
-for i in range(25):
+for i in range(big_test_times):
     big.write(data)
 diff = time.time() - t
-print("Written...", diff, "seconds")
-print(len(data) / diff / 2 ** 20 * 25, "MiB/sec")
+print("Complete", diff, "seconds", len(data) / diff / 2 ** 20 * big_test_times, "MiB/sec")
 
-print_general_info(fs)
-
-print("Reading", len(data), "bytes")
+print("Reading", len(data) * big_test_times / 2 ** 20, "MiB")
 t = time.time()
-for i in range(25):
+for i in range(big_test_times):
     rdata = big.read(len(data))
     assert rdata == data
 diff = time.time() - t
-print("Read...", diff, "seconds")
-print(len(data) / diff / 2 ** 20 * 25, "MiB/sec")
+print("Complete", diff, "seconds", len(data) / diff / 2 ** 20 * big_test_times, "MiB/sec")
 
 big.delete()
 print("Done...")
 
+print_general_info(fs)
