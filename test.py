@@ -34,7 +34,7 @@ fs = FileSystem(sandbox / "a.plaraefs", b"a" * 32)
 print_general_info(fs)
 
 print("Creating file `a`...")
-a = fs.open("a", create=True, exclusive=True)
+a = fs.open("a", create=True)
 print("File `a` created")
 
 print_general_info(fs)
@@ -93,6 +93,20 @@ for i in range(big_test_times):
     assert rdata == data
 diff = time.time() - t
 print("Complete", diff, "seconds", len(data) / diff / 2 ** 20 * big_test_times, "MiB/sec")
+
+print("Reading chunk test")
+reader = fs.read_file_iter(big.file_id)
+next(reader)
+ds = []
+before = fs.block_reads
+d = True
+while d:
+    d = reader.send(500)
+    ds.append(d)
+ds = b"".join(ds).decode()
+assert ds == data
+assert fs.block_reads == len(fs.file_blocks(big.file_id)) + before
+
 
 big.delete()
 print("Done...")

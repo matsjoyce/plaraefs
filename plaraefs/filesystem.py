@@ -26,6 +26,23 @@ DATA_BLOCK_SIZE = TOTAL_BLOCK_SIZE - IV_SIZE - TAG_SIZE
 FILE_ID_SIZE = 8
 BLOCK_ID_SIZE = 8
 
+# Util contains the following items:
+# - free_blocks
+#     - all the blocks of the main that are not in use by a file
+#     - encoded the same way as in Files
+
+# Versions contains the following items:
+# - names
+#     - a number incremented whenever Names is changed
+#     - changes when a file name is added or removed
+# - files
+#     - a number incremented whenever Files is changed
+#     - changes when a file's blocks or metadata changes
+# - data
+#     - a number incremented whenever the main data file changes
+#     - changes when a block is written to
+
+
 SCHEMA = """
 create table Files (
     id                  integer primary key,
@@ -33,7 +50,7 @@ create table Files (
     blocks              blob
 );
 
-create table Filenames (
+create table Names (
     name                blob primary key,
     id                  integer not null,
     foreign key(id) references Files(id)
@@ -42,6 +59,11 @@ create table Filenames (
 create table Util (
     key                 blob primary key,
     value               blob
+);
+
+create table Versions (
+    key                 blob primary key,
+    version             int
 );
 """
 
@@ -85,9 +107,13 @@ class FileSystem:
 
         self.db_fname = self.fname.with_suffix(FS_DB_EXT)
         self.conn = self.db_thread = None
+
         self.file_name_cache = self.reverse_file_name_cache = None
         self.file_name_version = -1
+        self.versions_to_increment = set()
+
         self.is_in_exclusive_transaction = False
+        self.block_reads = self.block_writes = 0
 
     @staticmethod
     def db_connect(fname):
@@ -154,8 +180,11 @@ class FileSystem:
         conn.executescript(SCHEMA)
         conn.execute("insert into Util (key, value) values (?, ?)",
                      (b"free_blocks", b""))
-        conn.execute("insert into Util (key, value) values (?, ?)",
-                     (b"filenames_version", (0).to_bytes(4, "little")))
+        conn.executemany("insert into Versions (key, version) values (?, ?)",
+                         [(b"names", 0),
+                          (b"files", 0),
+                          (b"data", 0),
+                          ])
         conn.commit()
 
     @contextlib.contextmanager
@@ -174,15 +203,16 @@ class FileSystem:
     @contextlib.contextmanager
     def exclusive_transaction(self):
         # make sure no one else can read or write to the db during this CM
-        with self.db_connected():
-            if self.conn.in_transaction:
-                yield
-                return
+        if self.is_in_exclusive_transaction:
+            yield
+            return
 
+        with self.db_connected():
             self.conn.execute("begin exclusive transaction")
             self.is_in_exclusive_transaction = True
             try:
                 yield
+                self.flush_versions()
             except:
                 self.conn.rollback()
                 raise
@@ -218,6 +248,25 @@ class FileSystem:
             finally:
                 f.flush()
 
+    @check_types
+    @with_db_connected
+    def new_version(self, name: bytes, old_value: int):
+        current = self.conn.execute("select version from Versions where key = ?", (name,)).fetchone()[0]
+        return old_value != current, current
+
+    @check_types
+    def increment_version(self, name: bytes):
+        assert self.is_in_exclusive_transaction
+        self.versions_to_increment.add(name)
+
+    def flush_versions(self):
+        for name in self.versions_to_increment:
+            current = self.conn.execute("select version from Versions where key = ?",
+                                        (name,)).fetchone()[0]
+            self.conn.execute("update Versions set version = ? where key = ?",
+                              ((current + 1) % 2 ** 64, name,))
+        self.versions_to_increment.clear()
+
     # block level operations
 
     @check_types
@@ -241,6 +290,7 @@ class FileSystem:
         raw_blocks = self.encode_block_ids(blocks)
         cipher_raw_blocks = self.encrypt(raw_blocks)
         self.conn.execute("update Files set blocks = ? where id = ?", (cipher_raw_blocks, file_id))
+        self.increment_version(b"files")
 
     @with_db_connected
     def free_blocks(self):
@@ -264,11 +314,14 @@ class FileSystem:
 
     @check_types
     def new_blocks(self, number):
+        assert self.is_in_exclusive_transaction
+        self.block_writes += number
         total_blocks = self.total_blocks()
         new_block_ids = list(range(total_blocks, total_blocks + number))
         with self.main_file() as f:
             f.seek(self.block_start(new_block_ids[-1]))
             f.write(b"\0" * TOTAL_BLOCK_SIZE)
+        self.increment_version(b"data")
         return new_block_ids
 
     def allocate_blocks(self, number):
@@ -291,6 +344,7 @@ class FileSystem:
     @check_types
     def read_block(self, block_id: int):
         # return None if the block is not initialised
+        self.block_reads += 1
         with self.main_file() as f:
             f.seek(self.block_start(block_id))
             cipherdata = f.read(TOTAL_BLOCK_SIZE)
@@ -304,8 +358,9 @@ class FileSystem:
         return data
 
     @check_types
-    @with_db_connected
+    @with_exclusive_transaction
     def write_block(self, block_id: int, data: bytes):
+        self.block_writes += 1
         assert len(data) == DATA_BLOCK_SIZE
         cipherdata = self.encrypt(data)
         assert len(cipherdata) == TOTAL_BLOCK_SIZE
@@ -313,36 +368,29 @@ class FileSystem:
         with self.main_file() as f:
             f.seek(self.block_start(block_id))
             f.write(cipherdata)
+        self.increment_version(b"data")
 
     @check_types
-    @with_db_connected
+    @with_exclusive_transaction
     def wipe_block(self, block_id: int):
+        self.block_writes += 1
         with self.main_file() as f:
             f.seek(self.block_start(block_id))
             f.write(b"\0" * TOTAL_BLOCK_SIZE)
+        self.increment_version(b"data")
 
     # file level operations
 
     @with_db_connected
     def reload_file_name_cache(self):
-        current_file_name_version, = self.conn.execute("select value from Util where key = ?",
-                                                       (b"filenames_version",)).fetchone()
-        current_file_name_version = int.from_bytes(current_file_name_version, "little")
-        if current_file_name_version != self.file_name_version:
+        reload, self.file_name_version = self.new_version(b"names", self.file_name_version)
+        if reload:
             self.file_name_cache = {}
             self.reverse_file_name_cache = collections.defaultdict(set)
-            for file_id, ciphername in self.conn.execute("select id, name from Filenames"):
+            for file_id, ciphername in self.conn.execute("select id, name from Names"):
                 name = self.decrypt(ciphername)
                 self.file_name_cache[name] = file_id
                 self.reverse_file_name_cache[file_id].add(name)
-
-    def increment_file_name_cache(self):
-        assert self.is_in_exclusive_transaction
-        current_file_name_version, = self.conn.execute("select value from Util where key = ?",
-                                                       (b"filenames_version",)).fetchone()
-        current_file_name_version = int.from_bytes(current_file_name_version, "little") + 1
-        self.conn.execute("update Util set value = ? where key = ?",
-                          (current_file_name_version.to_bytes(4, "little"), b"filenames_version"))
 
     @check_types
     @with_db_connected
@@ -372,12 +420,12 @@ class FileSystem:
     @check_types
     @with_exclusive_transaction
     def remove_file_name(self, file_id: int, name: bytes):
-        cipher_names = self.conn.execute("select name from Filenames where id = ?", (file_id,))
+        cipher_names = self.conn.execute("select name from Names where id = ?", (file_id,))
         for cipher_name, in cipher_names:
             if self.decrypt(cipher_name) == name:
-                self.conn.execute("delete from Filenames where id = ? and name = ?",
+                self.conn.execute("delete from Names where id = ? and name = ?",
                                   (file_id, cipher_name))
-                self.increment_file_name_cache()
+                self.increment_version(b"names")
                 return
         raise FileNotFoundError(name)
 
@@ -393,8 +441,8 @@ class FileSystem:
 
         cipher_name = self.encrypt(name)
 
-        self.conn.execute("insert into Filenames (name, id) values (?, ?)", (cipher_name, file_id))
-        self.increment_file_name_cache()
+        self.conn.execute("insert into Names (name, id) values (?, ?)", (cipher_name, file_id))
+        self.increment_version(b"names")
 
     @check_types
     @with_exclusive_transaction
@@ -423,9 +471,10 @@ class FileSystem:
 
         self.conn.execute("insert into Files (id, metadata, blocks) values (?, ?, ?)",
                           (file_id, cipher_metadata, cipher_blocks))
+        self.increment_version(b"files")
 
-        self.conn.execute("insert into Filenames (name, id) values (?, ?)", (cipher_name, file_id))
-        self.increment_file_name_cache()
+        self.conn.execute("insert into Names (name, id) values (?, ?)", (cipher_name, file_id))
+        self.increment_version(b"names")
 
         return file_id
 
@@ -437,9 +486,10 @@ class FileSystem:
         free_blocks.extend(file_blocks)
         self.set_free_blocks(free_blocks)
 
-        self.conn.execute("delete from Filenames where id = ?", (file_id,))
-        self.increment_file_name_cache()
+        self.conn.execute("delete from Names where id = ?", (file_id,))
+        self.increment_version(b"names")
         self.conn.execute("delete from Files where id = ?", (file_id,))
+        self.increment_version(b"files")
 
         for block_id in file_blocks:
             self.wipe_block(block_id)
@@ -457,6 +507,7 @@ class FileSystem:
         serialised_metadata = msgpack.dumps(metadata, use_bin_type=True)
         cipher_metadata = self.encrypt(serialised_metadata)
         self.conn.execute("update Files set metadata = ? where id = ?", (cipher_metadata, file_id))
+        self.increment_version(b"files")
 
     @check_types
     @with_exclusive_transaction
@@ -498,35 +549,59 @@ class FileSystem:
 
     @check_types
     @with_db_connected
-    def read_file(self, file_id: int, amount: int, start: int=0):
+    def read_file_iter(self, file_id: int, start: int=0):
         current_blocks = self.file_blocks(file_id)
-        if len(current_blocks) == 0:
-            return b""
-
         metadata = self.file_metadata(file_id)
+        _, files_version = self.new_version(b"files", -1)
+        _, data_version = self.new_version(b"data", -1)
+        current_block = block_data = None
 
-        end = min(start + amount, metadata["size"])
+        data = b""
+        data_chunks = []
+        while True:
+            amount = yield data
+            if amount is None:
+                return
 
-        first_block, first_block_start = divmod(start, DATA_BLOCK_SIZE)
-        last_block, last_block_end = divmod(end, DATA_BLOCK_SIZE)
+            reload, files_version = self.new_version(b"files", files_version)
+            if reload:
+                current_blocks = self.file_blocks(file_id)
+                metadata = self.file_metadata(file_id)
 
-        data = []
+            reload, data_version = self.new_version(b"data", data_version)
+            if reload:
+                current_block = block_data = None
 
-        for block_index in range(first_block, last_block + 1):
-            block_data_start = 0
-            block_data_end = DATA_BLOCK_SIZE
-            if block_index == first_block:
-                block_data_start = first_block_start
-            if block_index == last_block:
-                block_data_end = last_block_end
+            end = min(start + amount, metadata["size"])
+            first_block, first_block_start = divmod(start, DATA_BLOCK_SIZE)
+            last_block, last_block_end = divmod(end, DATA_BLOCK_SIZE)
 
-            block_data = self.read_block(current_blocks[block_index])
-            if block_data is not None:
-                data.append(block_data[block_data_start:block_data_end])
-            else:
-                data.append(b"\0" * (block_data_end - block_data_start))
+            for block_index in range(first_block, last_block + 1):
+                block_data_start = 0
+                block_data_end = DATA_BLOCK_SIZE
+                if block_index == first_block:
+                    block_data_start = first_block_start
+                if block_index == last_block:
+                    block_data_end = last_block_end
 
-        return b"".join(data)
+                if current_blocks[block_index] != current_block:
+                    current_block = current_blocks[block_index]
+                    block_data = self.read_block(current_blocks[block_index])
+                if block_data is not None:
+                    data_chunks.append(block_data[block_data_start:block_data_end])
+                else:
+                    data_chunks.append(b"\0" * (block_data_end - block_data_start))
+            data = b"".join(data_chunks)
+            assert len(data) == end - start
+            data_chunks.clear()
+            start = end
+
+    @check_types
+    @with_db_connected
+    def read_file(self, file_id: int, amount: int, start: int=0):
+        reader = self.read_file_iter(file_id, start)
+        next(reader)
+        return reader.send(amount)
 
     @check_types
     @with_exclusive_transaction
