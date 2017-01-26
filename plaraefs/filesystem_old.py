@@ -1,100 +1,64 @@
 import array
 import collections
-import contextlib
-import functools
-import inspect
 import msgpack
 import os
-import pathlib
 import sqlite3
 import sys
-import threading
 
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-
-FS_EXT = ".plaraefs"
-FS_DB_EXT = FS_EXT + "db"
-
-TOTAL_BLOCK_SIZE = 4 * 2 ** 10
-KEY_SIZE = 32  # 256 bit keys
-IV_SIZE = 16  # 128 bit IV
-TAG_SIZE = 16  # 128 bit AEAD tag
-UNINITALISED_IV = b"\0" * IV_SIZE
-DATA_BLOCK_SIZE = TOTAL_BLOCK_SIZE - IV_SIZE - TAG_SIZE
-
-FILE_ID_SIZE = 8
-BLOCK_ID_SIZE = 8
-WRITE_ITER_BUFFER_SIZE = 8
-
-# Util contains the following items:
-# - free_blocks
-#     - all the blocks of the main that are not in use by a file
-#     - encoded the same way as in Files
-
-# Versions contains the following items:
-# - names
-#     - a number incremented whenever Names is changed
-#     - changes when a file name is added or removed
-# - files
-#     - a number incremented whenever Files is changed
-#     - changes when a file's blocks or metadata changes
-# - data
-#     - a number incremented whenever the main data file changes
-#     - changes when a block is written to
+from .blockfilesystem import BlockFileSystem
 
 
-SCHEMA = """
-create table Files (
-    id                  integer primary key,
-    metadata            blob,
-    blocks              blob
-);
-
-create table Names (
-    name                blob primary key,
-    id                  integer not null,
-    foreign key(id) references Files(id)
-);
-
-create table Util (
-    key                 blob primary key,
-    value               blob
-);
-
-create table Versions (
-    key                 blob primary key,
-    version             int
-);
-"""
-
-backend = default_backend()
-
-
-def ceildiv(a, b):
-    # http://stackoverflow.com/a/17511341/3946766
-    return -(-a // b)
-
-
-def check_types(func):
-    if __debug__:
-        sig = inspect.signature(func)
-
-        @functools.wraps(func)
-        def ct_wrapper(*args, **kwargs):
-            for arg, param in zip(args, sig.parameters.values()):
-                if param.annotation is not inspect._empty and not isinstance(arg, param.annotation):
-                    raise ValueError(f"Argument {param.name} must be of type {param.annotation}, not {type(arg)}")
-            for name, arg in kwargs.items():
-                param = sig.parameters[name]
-                if param.annotation is not inspect._empty and not isinstance(arg, param.annotation):
-                    raise ValueError(f"Argument {param.name} must be of type {param.annotation}, not {type(arg)}")
-            return func(*args, **kwargs)
-        return ct_wrapper
-    return func
 
 
 class FileSystem:
+    FILE_ID_SIZE = 8
+    WRITE_ITER_BUFFER_SIZE = 8
+
+    def __init__(self, fname, key):
+        self.blockfs = BlockFileSystem(fname, key)
+
+
+
+    def allocate_blocks(self, number):
+        free_blocks = self.free_blocks()
+        allocated_blocks, free_blocks = free_blocks[:number], free_blocks[number:]
+        if len(allocated_blocks) != number:
+            allocated_blocks.extend(self.new_blocks(number - len(allocated_blocks)))
+        self.set_free_blocks(free_blocks)
+        return allocated_blocks
+
+    def deallocate_blocks(self, block_ids):
+        free_blocks = self.free_blocks()
+        for block_id in block_ids:
+            free_blocks.append(block_id)
+            self.wipe_block(block_id)
+        self.set_free_blocks(free_blocks)
+    @check_types
+    def file_blocks(self, file_id: int):
+        cipher_raw_blocks, = self.conn.execute("select blocks from Files where id = ?", (file_id,)).fetchone()
+        raw_blocks = self.decrypt(cipher_raw_blocks)
+        return self.decode_block_ids(raw_blocks)
+
+    @check_types
+    def set_file_blocks(self, file_id: int, blocks):
+        raw_blocks = self.encode_block_ids(blocks)
+        cipher_raw_blocks = self.encrypt(raw_blocks)
+        self.conn.execute("update Files set blocks = ? where id = ?", (cipher_raw_blocks, file_id))
+        self.increment_version(b"files")
+
+    def free_blocks(self):
+        cipher_raw_blocks, = self.conn.execute("select value from Util where key = ?", (b"free_blocks",)).fetchone()
+        if cipher_raw_blocks == b"":
+            return self.make_block_id_container()
+        raw_blocks = self.decrypt(cipher_raw_blocks)
+        assert len(raw_blocks) % BLOCK_ID_SIZE == 0
+        return self.decode_block_ids(raw_blocks)
+
+    def set_free_blocks(self, blocks):
+        raw_blocks = self.encode_block_ids(blocks)
+        cipher_raw_blocks = self.encrypt(raw_blocks)
+        self.conn.execute("update Util set value = ? where key = ?", (cipher_raw_blocks, b"free_blocks"))
+
     @check_types
     def __init__(self, fname, key: bytes):
         self.lock = threading.RLock()
@@ -115,7 +79,6 @@ class FileSystem:
         self.number_of_active_write_iterators = 0
 
         self.is_in_exclusive_transaction = False
-        self.block_reads = self.block_writes = 0
 
     @staticmethod
     def db_connect(fname):
@@ -126,27 +89,6 @@ class FileSystem:
     @staticmethod
     def generate_file_id():
         return int.from_bytes(os.urandom(FILE_ID_SIZE), "little", signed=True)
-
-    @check_types
-    def encrypt(self, plaintext: bytes):
-        iv = UNINITALISED_IV
-        while iv == UNINITALISED_IV:
-            iv = os.urandom(IV_SIZE)
-
-        cipher = Cipher(algorithms.AES(self.key), modes.GCM(iv), backend=backend)
-        encryptor = cipher.encryptor()
-        ciphertext = encryptor.update(plaintext) + encryptor.finalize()
-        return iv + ciphertext + encryptor.tag
-
-    @check_types
-    def decrypt(self, ciphertext: bytes):
-        assert len(ciphertext) >= IV_SIZE + TAG_SIZE
-        iv, ciphertext, tag = ciphertext[:IV_SIZE], ciphertext[IV_SIZE:-TAG_SIZE], ciphertext[-TAG_SIZE:]
-
-        cipher = Cipher(algorithms.AES(self.key), modes.GCM(iv, tag), backend=backend)
-        decryptor = cipher.decryptor()
-        plaintext = decryptor.update(ciphertext) + decryptor.finalize()
-        return plaintext
 
     @staticmethod
     def make_block_id_container():
@@ -268,118 +210,6 @@ class FileSystem:
             self.conn.execute("update Versions set version = ? where key = ?",
                               ((current + 1) % 2 ** 64, name,))
         self.versions_to_increment.clear()
-
-    # block level operations
-
-    @check_types
-    def block_start(self, block_id: int):
-        return block_id * TOTAL_BLOCK_SIZE
-
-    @check_types
-    def block_end(self, block_id: int):
-        return (block_id + 1) * TOTAL_BLOCK_SIZE
-
-    @check_types
-    @with_db_connected
-    def file_blocks(self, file_id: int):
-        cipher_raw_blocks, = self.conn.execute("select blocks from Files where id = ?", (file_id,)).fetchone()
-        raw_blocks = self.decrypt(cipher_raw_blocks)
-        return self.decode_block_ids(raw_blocks)
-
-    @check_types
-    @with_db_connected
-    def set_file_blocks(self, file_id: int, blocks):
-        raw_blocks = self.encode_block_ids(blocks)
-        cipher_raw_blocks = self.encrypt(raw_blocks)
-        self.conn.execute("update Files set blocks = ? where id = ?", (cipher_raw_blocks, file_id))
-        self.increment_version(b"files")
-
-    @with_db_connected
-    def free_blocks(self):
-        cipher_raw_blocks, = self.conn.execute("select value from Util where key = ?", (b"free_blocks",)).fetchone()
-        if cipher_raw_blocks == b"":
-            return self.make_block_id_container()
-        raw_blocks = self.decrypt(cipher_raw_blocks)
-        assert len(raw_blocks) % BLOCK_ID_SIZE == 0
-        return self.decode_block_ids(raw_blocks)
-
-    @with_db_connected
-    def set_free_blocks(self, blocks):
-        raw_blocks = self.encode_block_ids(blocks)
-        cipher_raw_blocks = self.encrypt(raw_blocks)
-        self.conn.execute("update Util set value = ? where key = ?", (cipher_raw_blocks, b"free_blocks"))
-
-    def total_blocks(self):
-        size = self.fname.stat().st_size
-        assert size % TOTAL_BLOCK_SIZE == 0
-        return size // TOTAL_BLOCK_SIZE
-
-    @check_types
-    def new_blocks(self, number):
-        assert self.is_in_exclusive_transaction
-        self.block_writes += number
-        total_blocks = self.total_blocks()
-        new_block_ids = list(range(total_blocks, total_blocks + number))
-        with self.main_file() as f:
-            f.seek(self.block_start(new_block_ids[-1]))
-            f.write(b"\0" * TOTAL_BLOCK_SIZE)
-        self.increment_version(b"data")
-        return new_block_ids
-
-    def allocate_blocks(self, number):
-        assert self.is_in_exclusive_transaction
-        free_blocks = self.free_blocks()
-        allocated_blocks, free_blocks = free_blocks[:number], free_blocks[number:]
-        if len(allocated_blocks) != number:
-            allocated_blocks.extend(self.new_blocks(number - len(allocated_blocks)))
-        self.set_free_blocks(free_blocks)
-        return allocated_blocks
-
-    def deallocate_blocks(self, block_ids):
-        assert self.is_in_exclusive_transaction
-        free_blocks = self.free_blocks()
-        for block_id in block_ids:
-            free_blocks.append(block_id)
-            self.wipe_block(block_id)
-        self.set_free_blocks(free_blocks)
-
-    @check_types
-    def read_block(self, block_id: int):
-        # return None if the block is not initialised
-        self.block_reads += 1
-        with self.main_file() as f:
-            f.seek(self.block_start(block_id))
-            cipherdata = f.read(TOTAL_BLOCK_SIZE)
-
-        assert len(cipherdata) == TOTAL_BLOCK_SIZE
-        if cipherdata[:IV_SIZE] == UNINITALISED_IV:
-            return None
-
-        data = self.decrypt(cipherdata)
-        assert len(data) == DATA_BLOCK_SIZE
-        return data
-
-    @check_types
-    @with_exclusive_transaction
-    def write_block(self, block_id: int, data: bytes):
-        self.block_writes += 1
-        assert len(data) == DATA_BLOCK_SIZE
-        cipherdata = self.encrypt(data)
-        assert len(cipherdata) == TOTAL_BLOCK_SIZE
-
-        with self.main_file() as f:
-            f.seek(self.block_start(block_id))
-            f.write(cipherdata)
-        self.increment_version(b"data")
-
-    @check_types
-    @with_exclusive_transaction
-    def wipe_block(self, block_id: int):
-        self.block_writes += 1
-        with self.main_file() as f:
-            f.seek(self.block_start(block_id))
-            f.write(b"\0" * TOTAL_BLOCK_SIZE)
-        self.increment_version(b"data")
 
     # file level operations
 
