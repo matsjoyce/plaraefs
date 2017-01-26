@@ -158,14 +158,17 @@ class BlockFileSystem:
         return plain_data
 
     @check_types
-    def write_block(self, block_id: int, data: bytes):
+    def write_block(self, block_id: int, data: bytes, with_token: bool=False):
         assert block_id < self.total_blocks()
 
-        cipherdata = self.encrypt_block(data)
+        cipher_data = self.encrypt_block(data)
 
         with self.file(True) as f:
             f.seek(self.block_start(block_id))
-            f.write(cipherdata)
+            f.write(cipher_data)
+
+        if with_token:
+            return cipher_data[:self.IV_SIZE]
 
     @check_types
     def swap_blocks(self, block_id1: int, block_id2: int):

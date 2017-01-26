@@ -1,25 +1,16 @@
 import collections
 
-
-class WIFileHeader:
-    __slots__ = ["token", "data", "block_id"]
-
-    def __init__(self, token, data, block_id):
-        self.token = token
-        self.data = data
-        self.block_id = block_id
+from .file_iterator import FileIterator
 
 
-class WriteIterator:
+class DefaultDict2(collections.defaultdict):
+    def __missing__(self, key):
+        return self.default_factory(key)
+
+
+class WriteIterator(FileIterator):
     def __init__(self, fs, file_id, start):
-        self.fs = fs
-        self.start = start
-        self.file_id = file_id
-
-        self.headers = {}
-        self.current_header_id = None
-        self.current_header = None
-
+        super().__init__(fs, file_id, start)
         self.unflushed_data = []
         self.unflushed_data_length = 0
         self.unflushed_data_first_item_start = 0
@@ -56,68 +47,42 @@ class WriteIterator:
         assert len(data) == length or len(data) < length and force
         return data
 
-    def get_header(self, header_id):
-        if header_id in self.headers:
-            wih = self.headers[header_id]
-            reload, wih.token = self.fs.blockfs.block_version(wih.block_id, wih.token)
-            if not reload:
-                return wih.block_id, wih.data
-
-        if header_id == 0:
-            block_id = self.file_id
-        else:
-            block_id = self.get_header(header_id - 1).continuation_block_id
-
-        data, token = self.fs.blockfs.read_block(block_id, with_token=True)
-        if header_id == 0:
-            hdata, _ = self.fs.read_file_header(data)
-        else:
-            hdata, _ = self.fs.read_file_continuation_header(data)
-
-        self.headers[header_id] = WIFileHeader(token, hdata, block_id)
-        return block_id, hdata
-
-    def data_in_block(self, header, block_num):
-        if block_num == 0:
-            if header == 0:
-                return self.fs.FILE_HEADER_DATA_SIZE
-            return self.fs.FILE_CONTINUATION_HEADER_DATA_SIZE
-        return self.fs.blockfs.LOGICAL_BLOCK_SIZE
-
-    def block_from_offset(self, start):
-        if start < self.fs.FILE_HEADER_DATA_SIZE:
-            return 0, 0, start + self.fs.FILE_HEADER_SIZE
-        start -= self.fs.FILE_HEADER_DATA_SIZE
-        header, block_and_stuff = divmod(start,
-                                         self.fs.blockfs.LOGICAL_BLOCK_SIZE * self.fs.BLOCK_IDS_PER_HEADER
-                                         + self.fs.FILE_CONTINUATION_HEADER_DATA_SIZE)
-        block, offset = divmod(block_and_stuff, self.fs.blockfs.LOGICAL_BLOCK_SIZE)
-        if block == self.fs.BLOCK_IDS_PER_HEADER:
-            header += 1
-            block = 0
-            offset += self.fs.FILE_CONTINUATION_HEADER_SIZE
-        else:
-            block += 1
-        return header, block, offset
-
-    def write(self, data, flush=False):
-        self.add_unbuffered(data)
+    def blocks_to_write(self, flush=False):
         header, block_num, offset = self.block_from_offset(self.start)
         block_size = self.data_in_block(header, block_num)
         data_to_write = self.take_unbuffered(block_size - offset, force=flush)
 
-        if not data_to_write:
+        blocks_to_write = []
+
+        while data_to_write:
+            # Inefficiency: getting the header twice is bad as it won't change due to the lock
+            self.start += len(data_to_write)
+            data_from_end = self.fs.blockfs.LOGICAL_BLOCK_SIZE - offset - len(data_to_write)
+
+            yield header, block_num, offset, data_from_end, data_to_write
+
+            header, block_num, offset = self.block_from_offset(self.start)
+            block_size = self.data_in_block(header, block_num)
+            data_to_write = self.take_unbuffered(block_size - offset, force=flush)
+
+    def write(self, data, flush=False):
+        self.add_unbuffered(data)
+
+        # TODO: For certain sizes this should be generated...
+        blocks_to_write = list(self.blocks_to_write(flush=flush))
+
+        if not blocks_to_write:
             return
 
+        header_data_cache = DefaultDict2(self.get_header)
+
         with self.fs.blockfs.lock_file(write=True):
-            while data_to_write:
-                # Inefficiency: getting the header twice is bad as it won't change due to the lock
-                header_block_id, header_data = self.get_header(header)
+            for header, block_num, offset, data_from_end, data_to_write in blocks_to_write:
+                header_block_id, header_data = header_data_cache[header]
                 if block_num:
                     block_id = header_data.block_ids[block_num - 1]
                 else:
                     block_id = header_block_id
-                data_from_end = self.fs.blockfs.LOGICAL_BLOCK_SIZE - offset - len(data_to_write)
 
                 if offset or data_from_end:
                     old_data = self.fs.blockfs.read_block(block_id)
@@ -128,10 +93,6 @@ class WriteIterator:
 
                 assert len(data_to_write) == self.fs.blockfs.LOGICAL_BLOCK_SIZE
 
-                self.fs.blockfs.write_block(block_id, data_to_write)
-                self.start += len(data_to_write)
-
-                header, block_num, offset = self.block_from_offset(self.start)
-                block_size = self.data_in_block(header, block_num)
-                data_to_write = self.take_unbuffered(block_size - offset, force=flush)
-
+                token = self.fs.blockfs.write_block(block_id, data_to_write, with_token=True)
+                if not block_num:
+                    self.set_header_token(header, token)
