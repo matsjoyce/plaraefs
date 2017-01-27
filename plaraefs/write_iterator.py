@@ -15,12 +15,12 @@ class WriteIterator(FileIterator):
         self.unflushed_data_length = 0
         self.unflushed_data_first_item_start = 0
 
-    def add_unbuffered(self, data):
+    def add_unflushed(self, data):
         if data:
             self.unflushed_data.append(data)
             self.unflushed_data_length += len(data)
 
-    def take_unbuffered(self, length, force=False):
+    def take_unflushed(self, length, force=False):
         if self.unflushed_data_length < length and not force:
             return
 
@@ -48,25 +48,25 @@ class WriteIterator(FileIterator):
         return data
 
     def blocks_to_write(self, flush=False):
-        header, block_num, offset = self.block_from_offset(self.start)
-        block_size = self.data_in_block(header, block_num)
-        data_to_write = self.take_unbuffered(block_size - offset, force=flush)
+        block_num, offset = self.block_from_offset(self.start)
+        block_size = self.fs.file_data_in_block(block_num)
+        data_to_write = self.take_unflushed(block_size - offset, force=flush)
 
         blocks_to_write = []
 
         while data_to_write:
             # Inefficiency: getting the header twice is bad as it won't change due to the lock
             self.start += len(data_to_write)
-            data_from_end = self.fs.blockfs.LOGICAL_BLOCK_SIZE - offset - len(data_to_write)
+            data_from_end = block_size - offset - len(data_to_write)
 
-            yield header, block_num, offset, data_from_end, data_to_write
+            yield block_num, offset, data_from_end, data_to_write
 
-            header, block_num, offset = self.block_from_offset(self.start)
-            block_size = self.data_in_block(header, block_num)
-            data_to_write = self.take_unbuffered(block_size - offset, force=flush)
+            block_num, offset = self.block_from_offset(self.start)
+            block_size = self.fs.file_data_in_block(block_num)
+            data_to_write = self.take_unflushed(block_size - offset, force=flush)
 
     def write(self, data, flush=False):
-        self.add_unbuffered(data)
+        self.add_unflushed(data)
 
         # TODO: For certain sizes this should be generated...
         blocks_to_write = list(self.blocks_to_write(flush=flush))
@@ -74,25 +74,13 @@ class WriteIterator(FileIterator):
         if not blocks_to_write:
             return
 
-        header_data_cache = DefaultDict2(self.get_header)
-
         with self.fs.blockfs.lock_file(write=True):
-            for header, block_num, offset, data_from_end, data_to_write in blocks_to_write:
-                header_block_id, header_data = header_data_cache[header]
-                if block_num:
-                    block_id = header_data.block_ids[block_num - 1]
-                else:
-                    block_id = header_block_id
-
+            for block_num, offset, data_from_end, data_to_write in blocks_to_write:
                 if offset or data_from_end:
-                    old_data = self.fs.blockfs.read_block(block_id)
+                    old_data = self.fs.read_file_data(self.file_id, block_num)
                     if old_data is None:
                         data_to_write = b"".join((b"\0" * offset, data_to_write, b"\0" * data_from_end))
                     else:
                         data_to_write = b"".join((old_data[:offset], data_to_write, old_data[-data_from_end:]))
 
-                assert len(data_to_write) == self.fs.blockfs.LOGICAL_BLOCK_SIZE
-
-                token = self.fs.blockfs.write_block(block_id, data_to_write, with_token=True)
-                if not block_num:
-                    self.set_header_token(header, token)
+                self.fs.write_file_data(self.file_id, block_num, data_to_write)
