@@ -1,9 +1,9 @@
 import array
 import bitarray
-import collections
 import recordclass
 import itertools
 import sys
+import lru
 
 
 from .blockfilesystem import BlockFileSystem
@@ -12,6 +12,7 @@ from .utils import check_types
 
 FileHeader = recordclass.recordclass("FileHeader", ("mode", "group_tag", "size", "next_header", "block_ids"))
 FileContinuationHeader = recordclass.recordclass("FileContinuationHeader", ("next_header", "prev_header", "block_ids"))
+HeaderCache = recordclass.recordclass("HeaderCache", ("block_id", "hdata", "token"))
 
 singleton_0_bitarray = bitarray.bitarray("0")
 singleton_1_bitarray = bitarray.bitarray("1")
@@ -25,7 +26,8 @@ class FileSystem:
 
     @property
     def FILE_HEADER_SIZE(self):
-        return 1 + self.GROUP_TAG_SIZE + self.FILESIZE_SIZE + (self.BLOCK_IDS_PER_HEADER + 1) * self.blockfs.BLOCK_ID_SIZE
+        return (1 + self.GROUP_TAG_SIZE + self.FILESIZE_SIZE +
+                (self.BLOCK_IDS_PER_HEADER + 1) * self.blockfs.BLOCK_ID_SIZE)
 
     @property
     def FILE_HEADER_DATA_SIZE(self):
@@ -33,7 +35,7 @@ class FileSystem:
 
     @property
     def FILE_CONTINUATION_HEADER_SIZE(self):
-        return (self.BLOCK_IDS_PER_HEADER + 1) * self.blockfs.BLOCK_ID_SIZE
+        return (self.BLOCK_IDS_PER_HEADER + 2) * self.blockfs.BLOCK_ID_SIZE
 
     @property
     def FILE_CONTINUATION_HEADER_DATA_SIZE(self):
@@ -49,6 +51,7 @@ class FileSystem:
 
     def __init__(self, blockfs: BlockFileSystem):
         self.blockfs = blockfs
+        self.header_cache = lru.LRU(1024)
 
     @classmethod
     @check_types
@@ -253,7 +256,7 @@ class FileSystem:
         else:
             last_header -= 1
             last_block = self.BLOCK_IDS_PER_HEADER
-        print(last_header, last_block)
+
         header_block_id, hdata = self.get_file_header(file_id, last_header)
         blocks_to_free = hdata.block_ids[last_block:]
 
@@ -283,11 +286,19 @@ class FileSystem:
 
     @check_types
     def get_file_header(self, file_id: int, header_num: int=None):
-        # TODO: add clever caching
+        try:
+            hcache = self.header_cache[(file_id, header_num)]
+            reload, _ = self.blockfs.block_version(hcache.block_id, hcache.token)
+            if not reload:
+                return hcache.block_id, hcache.hdata
+        except KeyError:
+            pass
+        # TODO: make this cleverer: find the nearest loaded block and go from there
         block_id = file_id
         num = 0
         with self.blockfs.lock_file(write=False):
-            data = self.unpack_file_header(self.blockfs.read_block(block_id))
+            data, token = self.blockfs.read_block(block_id, with_token=True)
+            data = self.unpack_file_header(data)
             while num != header_num and data.next_header:
                 num += 1
                 block_id = data.next_header
@@ -295,6 +306,7 @@ class FileSystem:
         if header_num is None:
             return num, block_id, data
         assert header_num == num
+        self.header_cache[(file_id, header_num)] = HeaderCache(block_id, data, token)
         return block_id, data
 
     def create_new_file(self):
@@ -324,7 +336,7 @@ class FileSystem:
             if not block_num:
                 return self.blockfs.read_block(header_block_id)[-data_len:]
             else:
-                return self.blockfs.read_block(hdata.block_ids[block_num])
+                return self.blockfs.read_block(hdata.block_ids[block_num - 1])
 
     @check_types
     def write_file_data(self, file_id: int, block_num: int, data: bytes):
@@ -339,7 +351,11 @@ class FileSystem:
                     data = b"".join((old_data[:self.FILE_CONTINUATION_HEADER_SIZE], data))
                 else:
                     data = b"".join((old_data[:self.FILE_HEADER_SIZE], data))
-                self.blockfs.write_block(header_block_id, data)
+                token = self.blockfs.write_block(header_block_id, data, with_token=True)
+                try:
+                    # Set token as we didn't change the header part
+                    self.header_cache[(file_id, header)].token = token
+                except KeyError:
+                    pass
             else:
-                self.blockfs.write_block(hdata.block_ids[block_num], data)
-            print(data)
+                self.blockfs.write_block(hdata.block_ids[block_num - 1], data, with_token=True)

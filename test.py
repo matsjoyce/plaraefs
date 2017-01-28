@@ -3,7 +3,7 @@ import pytest
 import argparse
 import coverage
 
-IGNORE = [".git", "sandbox"]
+IGNORE = [".git", "sandbox", "attic"]
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--with-flake8", action="store_true")

@@ -88,4 +88,3 @@ def test_new_version(fs: BlockFileSystem):
     fs.write_block(0, b"a" * BlockFileSystem.LOGICAL_BLOCK_SIZE)
     reload, token = fs.block_version(0, token)
     assert reload
-

@@ -129,7 +129,7 @@ def test_extend_file_blocks(fs: FileSystem):
             FileContinuationHeader(0, 1 + fs.FILE_HEADER_INTERVAL * 3,
                                    fs.make_block_id_container([2 + fs.FILE_HEADER_INTERVAL * 4])))
 
-    # Aim for a last header full
+    # Aim for a full header
     fs.extend_file_blocks(file_id, fs.FILE_HEADER_INTERVAL * 5)
 
     assert fs.num_file_blocks(file_id) == fs.FILE_HEADER_INTERVAL * 5
@@ -170,7 +170,8 @@ def test_truncate_file_blocks(fs: FileSystem):
 
     assert (fs.get_file_header(file_id, 4)[1] ==
             FileContinuationHeader(0, 1 + fs.FILE_HEADER_INTERVAL * 3,
-                                   fs.make_block_id_container(range(2 + fs.FILE_HEADER_INTERVAL * 4, 2 + fs.FILE_HEADER_INTERVAL * 5 - 11))))
+                                   fs.make_block_id_container(range(2 + fs.FILE_HEADER_INTERVAL * 4,
+                                                                    2 + fs.FILE_HEADER_INTERVAL * 5 - 11))))
 
     # Aim for a header with one block
     fs.truncate_file_blocks(file_id, fs.FILE_HEADER_INTERVAL * 3 + 2)
@@ -202,7 +203,9 @@ def test_truncate_file_blocks(fs: FileSystem):
         assert fs.get_file_header(file_id, i)[1] == norm_headers[i]
     assert (fs.get_file_header(file_id, 2)[1] ==
             FileContinuationHeader(0, 1 + fs.FILE_HEADER_INTERVAL * 1,
-                                   fs.make_block_id_container(range(2 + fs.FILE_HEADER_INTERVAL * 2, 2 + fs.FILE_HEADER_INTERVAL * 2 + fs.BLOCK_IDS_PER_HEADER))))
+                                   fs.make_block_id_container(range(2 + fs.FILE_HEADER_INTERVAL * 2,
+                                                                    2 + fs.FILE_HEADER_INTERVAL * 2
+                                                                    + fs.BLOCK_IDS_PER_HEADER))))
 
     fs.extend_file_blocks(file_id, fs.FILE_HEADER_INTERVAL * 5)
 

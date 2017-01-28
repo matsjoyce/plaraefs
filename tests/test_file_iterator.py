@@ -12,11 +12,11 @@ def test_offsets(fs: FileSystem):
             offset = offset - fs.file_data_in_block(block)
             block += 1
 
-
         assert fi.block_from_offset(counter) == (block, offset), counter
         offset += 255
         counter += 255
 
     assert fi.block_from_offset(0) == (0, 0)
-    assert fi.block_from_offset(fs.FILE_HEADER_DATA_SIZE - 1) == (0, fs.blockfs.LOGICAL_BLOCK_SIZE - 1 - fs.FILE_HEADER_SIZE)
+    assert (fi.block_from_offset(fs.FILE_HEADER_DATA_SIZE - 1) ==
+            (0, fs.blockfs.LOGICAL_BLOCK_SIZE - 1 - fs.FILE_HEADER_SIZE))
     assert fi.block_from_offset(fs.FILE_HEADER_DATA_SIZE) == (1, 0)

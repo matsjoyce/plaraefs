@@ -26,6 +26,7 @@ class BlockFileSystem:
     BLOCK_ID_SIZE = 8
 
     def __init__(self, fname, key: bytes):
+        # TODO: add block caching
         self.lock = threading.RLock()
         self.key = key
         assert len(self.key) == self.KEY_SIZE

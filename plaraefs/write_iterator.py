@@ -1,11 +1,4 @@
-import collections
-
 from .file_iterator import FileIterator
-
-
-class DefaultDict2(collections.defaultdict):
-    def __missing__(self, key):
-        return self.default_factory(key)
 
 
 class WriteIterator(FileIterator):
@@ -35,7 +28,8 @@ class WriteIterator(FileIterator):
                 collected_chunk = chunk[self.unflushed_data_first_item_start:]
                 self.unflushed_data_first_item_start = 0
             else:
-                collected_chunk = chunk[self.unflushed_data_first_item_start:self.unflushed_data_first_item_start + wanted_length]
+                collected_chunk = chunk[self.unflushed_data_first_item_start:
+                                        self.unflushed_data_first_item_start + wanted_length]
                 self.unflushed_data_first_item_start += len(collected_chunk)
                 assert self.unflushed_data_first_item_start < len(chunk)
 
@@ -52,10 +46,7 @@ class WriteIterator(FileIterator):
         block_size = self.fs.file_data_in_block(block_num)
         data_to_write = self.take_unflushed(block_size - offset, force=flush)
 
-        blocks_to_write = []
-
         while data_to_write:
-            # Inefficiency: getting the header twice is bad as it won't change due to the lock
             self.start += len(data_to_write)
             data_from_end = block_size - offset - len(data_to_write)
 
@@ -75,7 +66,13 @@ class WriteIterator(FileIterator):
             return
 
         with self.fs.blockfs.lock_file(write=True):
+            total_blocks = self.fs.num_file_blocks(self.file_id)
             for block_num, offset, data_from_end, data_to_write in blocks_to_write:
+                if block_num >= total_blocks:
+                    print(block_num, total_blocks, blocks_to_write[-1][0] + 1)
+                    self.fs.extend_file_blocks(self.file_id, blocks_to_write[-1][0] + 1, total_blocks - 1)
+                    total_blocks = blocks_to_write[-1][0] + 1
+                    print(self.fs.num_file_blocks(self.file_id))
                 if offset or data_from_end:
                     old_data = self.fs.read_file_data(self.file_id, block_num)
                     if old_data is None:

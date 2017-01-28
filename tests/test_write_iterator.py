@@ -1,4 +1,3 @@
-import pytest
 from test_filesystem_low_level import fs
 from plaraefs.write_iterator import WriteIterator
 from plaraefs.filesystem import FileSystem
@@ -76,7 +75,6 @@ def test_small_multi_write(fs: FileSystem):
     assert data_before[:fs.FILE_HEADER_SIZE] + b"abcdef" * 10 + data_before[fs.FILE_HEADER_SIZE + 60:] == data_after
 
 
-@pytest.mark.xfail
 def test_large_single_write(fs: FileSystem):
     file_id = fs.create_new_file()
 
@@ -84,11 +82,19 @@ def test_large_single_write(fs: FileSystem):
 
     wi = WriteIterator(fs, file_id, 0)
 
-    data = b"abcdef" * 2 ** 10
+    data = b"abcdef" * 2 ** 20
     wi.write(data, flush=True)
 
-    data_after, token2 = fs.blockfs.read_block(file_id, with_token=True)
+    data_pos = 0
+    for i in range(fs.num_file_blocks(file_id)):
+        bdata = fs.blockfs.read_block(file_id + i)
+        if i % fs.FILE_HEADER_INTERVAL == 0:
+            if i == 0:
+                bdata = bdata[fs.FILE_HEADER_SIZE:]
+            else:
+                bdata = bdata[fs.FILE_CONTINUATION_HEADER_SIZE:]
 
-    assert token != token2
-    assert data_after.index(b"a") == fs.FILE_HEADER_SIZE
-    assert data_after[fs.FILE_HEADER_SIZE:] == data[:fs.FILE_HEADER_DATA_SIZE]
+        corresponding_data = data[data_pos:data_pos + len(bdata)]
+        assert bdata[:len(corresponding_data)] == corresponding_data
+        assert bdata[len(corresponding_data):].count(b"\0") == len(bdata[len(corresponding_data):])
+        data_pos += len(bdata)

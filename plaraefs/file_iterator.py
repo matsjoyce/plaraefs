@@ -1,15 +1,3 @@
-import collections
-
-
-class FIFileHeader:
-    __slots__ = ["token", "data", "block_id"]
-
-    def __init__(self, token, data, block_id):
-        self.token = token
-        self.data = data
-        self.block_id = block_id
-
-
 class FileIterator:
     def __init__(self, fs, file_id, start):
         self.fs = fs
@@ -30,4 +18,3 @@ class FileIterator:
         else:
             block += 1
         return header * self.fs.FILE_HEADER_INTERVAL + block, offset
-
