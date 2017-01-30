@@ -69,10 +69,8 @@ class WriteIterator(FileIterator):
             total_blocks = self.fs.num_file_blocks(self.file_id)
             for block_num, offset, data_from_end, data_to_write in blocks_to_write:
                 if block_num >= total_blocks:
-                    print(block_num, total_blocks, blocks_to_write[-1][0] + 1)
                     self.fs.extend_file_blocks(self.file_id, blocks_to_write[-1][0] + 1, total_blocks - 1)
                     total_blocks = blocks_to_write[-1][0] + 1
-                    print(self.fs.num_file_blocks(self.file_id))
                 if offset or data_from_end:
                     old_data = self.fs.read_file_data(self.file_id, block_num)
                     if old_data is None:

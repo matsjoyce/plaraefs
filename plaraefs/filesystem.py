@@ -96,9 +96,8 @@ class FileSystem:
         ids_data = data[start:start + self.blockfs.BLOCK_ID_SIZE * (self.BLOCK_IDS_PER_HEADER + 1)]
         block_ids = self.unpack_block_ids(ids_data)
         next_header = block_ids.pop(0)
-        while block_ids and not block_ids[-1]:
-            block_ids.pop()
-        start += self.blockfs.BLOCK_ID_SIZE * (self.BLOCK_IDS_PER_HEADER + 1)
+        if not block_ids[-1]:
+            block_ids = block_ids[:block_ids.index(0)]
         return FileHeader(mode, group_tag, size, next_header, block_ids)
 
     @check_types
@@ -116,14 +115,11 @@ class FileSystem:
 
     @check_types
     def unpack_file_continuation_header(self, data: bytes):
-        start = 0
-        ids_data = data[start:start + self.blockfs.BLOCK_ID_SIZE * (self.BLOCK_IDS_PER_HEADER + 2)]
-        block_ids = self.unpack_block_ids(ids_data)
+        block_ids = self.unpack_block_ids(data[:self.blockfs.BLOCK_ID_SIZE * (self.BLOCK_IDS_PER_HEADER + 2)])
         next_header = block_ids.pop(0)
         prev_header = block_ids.pop(0)
-        while block_ids and not block_ids[-1]:
-            block_ids.pop()
-        start += self.blockfs.BLOCK_ID_SIZE * (self.BLOCK_IDS_PER_HEADER + 2)
+        if not block_ids[-1]:
+            block_ids = block_ids[:block_ids.index(0)]
         return FileContinuationHeader(next_header, prev_header, block_ids)
 
     @check_types
@@ -198,14 +194,14 @@ class FileSystem:
                 self.write_superblock(superblock_id, bitmap)
 
     def num_file_blocks(self, file_id):
-        last_header, header_block_id, hdata = self.get_file_header(file_id)
+        last_header, header_block_id, hdata = self.get_last_file_header(file_id)
         last_block = len(hdata.block_ids)
         return last_header * self.FILE_HEADER_INTERVAL + last_block + 1
 
     @check_types
     def extend_file_blocks(self, file_id: int, block_num: int, last_block: int=None):
         if last_block is None:
-            last_header, header_block_id, hdata = self.get_file_header(file_id)
+            last_header, header_block_id, hdata = self.get_last_file_header(file_id)
             last_block = len(hdata.block_ids)
         else:
             last_header, last_block = divmod(last_block, self.FILE_HEADER_INTERVAL)
@@ -285,7 +281,7 @@ class FileSystem:
         self.deallocate_blocks(blocks_to_free)
 
     @check_types
-    def get_file_header(self, file_id: int, header_num: int=None):
+    def get_file_header(self, file_id: int, header_num: int):
         try:
             hcache = self.header_cache[(file_id, header_num)]
             reload, _ = self.blockfs.block_version(hcache.block_id, hcache.token)
@@ -293,21 +289,37 @@ class FileSystem:
                 return hcache.block_id, hcache.hdata
         except KeyError:
             pass
-        # TODO: make this cleverer: find the nearest loaded block and go from there
-        block_id = file_id
-        num = 0
-        with self.blockfs.lock_file(write=False):
-            data, token = self.blockfs.read_block(block_id, with_token=True)
+
+        if header_num:
+            with self.blockfs.lock_file(write=False):
+                block_id = self.get_file_header(file_id, header_num - 1)[1].next_header
+                data, token = self.blockfs.read_block(block_id, with_token=True)
+            data = self.unpack_file_continuation_header(data)
+        else:
+            block_id = file_id
+            with self.blockfs.lock_file(write=False):
+                data, token = self.blockfs.read_block(file_id, with_token=True)
             data = self.unpack_file_header(data)
-            while num != header_num and data.next_header:
-                num += 1
-                block_id = data.next_header
-                data = self.unpack_file_continuation_header(self.blockfs.read_block(block_id))
-        if header_num is None:
-            return num, block_id, data
-        assert header_num == num
+
         self.header_cache[(file_id, header_num)] = HeaderCache(block_id, data, token)
         return block_id, data
+
+    @check_types
+    def get_last_file_header(self, file_id: int):
+        for start in sorted((hnum for fid, hnum in self.header_cache.keys() if fid == file_id), reverse=True):
+            hcache = self.header_cache[(file_id, start)]
+            reload, _ = self.blockfs.block_version(hcache.block_id, hcache.token)
+            if not reload:
+                break
+        else:
+            start = 0
+
+        with self.blockfs.lock_file(write=False):
+            block_id, data = self.get_file_header(file_id, start)
+            while data.next_header:
+                start += 1
+                block_id, data = self.get_file_header(file_id, start)
+        return start, block_id, data
 
     def create_new_file(self):
         with self.blockfs.lock_file(write=True):
@@ -345,7 +357,9 @@ class FileSystem:
 
         with self.blockfs.lock_file(write=True):
             header_block_id, hdata = self.get_file_header(file_id, header)
-            if not block_num:
+            if block_num:
+                self.blockfs.write_block(hdata.block_ids[block_num - 1], data)
+            else:
                 old_data = self.blockfs.read_block(header_block_id)
                 if header:
                     data = b"".join((old_data[:self.FILE_CONTINUATION_HEADER_SIZE], data))
@@ -357,5 +371,3 @@ class FileSystem:
                     self.header_cache[(file_id, header)].token = token
                 except KeyError:
                     pass
-            else:
-                self.blockfs.write_block(hdata.block_ids[block_num - 1], data, with_token=True)

@@ -93,3 +93,31 @@ Maximums
 
  - Maximum file system size is 2**76 bytes (4 ZiB)
  - Maximum file size is 2**64 bytes (16 EiB)
+
+
+For reference
+=============
+
+ - With -O
+
+V1 stats:
+
+```
+Writing 225.0 MiB
+Complete 5.0357749462127686 seconds 44.680312842259696 MiB/sec
+Reading 225.0 MiB
+Complete 3.2638113498687744 seconds 68.93780794317244 MiB/sec
+Writing chunk test
+Complete 2.127565860748291 seconds 4.230186320452891 MiB/sec
+Reading chunk test
+Complete 0.2589693069458008 seconds 34.75315320623534 MiB/sec
+Done...
+```
+
+V2 stats:
+```
+Writing 225.0 MiB
+Complete in 5.3568031787872314 seconds 42.002663247175626 MiB/sec
+Writing chunk test
+Complete 0.38335180282592773 seconds 23.47712971128694 MiB/sec
+```

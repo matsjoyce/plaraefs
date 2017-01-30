@@ -148,24 +148,28 @@ class BlockFileSystem:
     @check_types
     def read_block(self, block_id: int, with_token: bool=False):
         # return None if the block is not initialised
+        try:
+            cache_data, cache_token = self.block_cache[block_id]
+            if self.file_locked and cache_token in self.locked_tokens:
+                if with_token:
+                    return cache_data, cache_token
+                return cache_data
+        except KeyError:
+            cache_token = None
+
         assert block_id < self.total_blocks()
         with self.lock:
-            try:
-                data, token = self.block_cache[block_id]
-                reload, _ = self.block_version(block_id, token)
-                if not reload:
-                    if with_token:
-                        return data, token
-                    return data
-            except KeyError:
-                pass
-
             with self.file(False) as f:
                 f.seek(self.block_start(block_id))
+                token = f.read(self.IV_SIZE)
+                if token == self.UNINITALISED_IV:
+                    return None
+                elif token == cache_token:
+                    if with_token:
+                        return cache_data, cache_token
+                    return cache_data
+                f.seek(self.block_start(block_id))
                 cipher_data = f.read(self.PHYSICAL_BLOCK_SIZE)
-
-            if cipher_data.startswith(self.UNINITALISED_IV):
-                return None
 
             plain_data = self.decrypt_block(cipher_data)
             token = cipher_data[:self.IV_SIZE]
@@ -233,12 +237,12 @@ class BlockFileSystem:
 
     @check_types
     def block_version(self, block_id: int, old_version: bytes=b""):
+        if self.file_locked and old_version in self.locked_tokens:
+            return False, old_version
+
         assert block_id < self.total_blocks()
 
         with self.lock:
-            if self.file_locked and old_version in self.locked_tokens:
-                return False, old_version
-
             with self.file(False) as f:
                 f.seek(self.block_start(block_id))
                 iv = f.read(self.IV_SIZE)
