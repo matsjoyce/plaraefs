@@ -2,6 +2,7 @@ import contextlib
 import os
 import pathlib
 import threading
+import lru
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -26,7 +27,6 @@ class BlockFileSystem:
     BLOCK_ID_SIZE = 8
 
     def __init__(self, fname, key: bytes):
-        # TODO: add block caching
         self.lock = threading.RLock()
         self.key = key
         assert len(self.key) == self.KEY_SIZE
@@ -40,6 +40,9 @@ class BlockFileSystem:
         self.block_reads = self.block_writes = 0
         self.file_locked = False
         self.file_locked_write = False
+
+        self.block_cache = lru.LRU(1024)
+        self.locked_tokens = set()
 
     @classmethod
     def initialise(cls, fname):
@@ -64,6 +67,7 @@ class BlockFileSystem:
             finally:
                 locking.unlock_file(self._file)
                 self.file_locked = False
+                self.locked_tokens.clear()
 
     @contextlib.contextmanager
     def file(self, write):
@@ -145,17 +149,33 @@ class BlockFileSystem:
     def read_block(self, block_id: int, with_token: bool=False):
         # return None if the block is not initialised
         assert block_id < self.total_blocks()
+        with self.lock:
+            try:
+                data, token = self.block_cache[block_id]
+                reload, _ = self.block_version(block_id, token)
+                if not reload:
+                    if with_token:
+                        return data, token
+                    return data
+            except KeyError:
+                pass
 
-        with self.file(False) as f:
-            f.seek(self.block_start(block_id))
-            cipher_data = f.read(self.PHYSICAL_BLOCK_SIZE)
+            with self.file(False) as f:
+                f.seek(self.block_start(block_id))
+                cipher_data = f.read(self.PHYSICAL_BLOCK_SIZE)
 
-        if cipher_data.startswith(self.UNINITALISED_IV):
-            return None
+            if cipher_data.startswith(self.UNINITALISED_IV):
+                return None
 
-        plain_data = self.decrypt_block(cipher_data)
+            plain_data = self.decrypt_block(cipher_data)
+            token = cipher_data[:self.IV_SIZE]
+
+            self.block_cache[block_id] = plain_data, token
+            if self.file_locked:
+                self.locked_tokens.add(token)
+
         if with_token:
-            return plain_data, cipher_data[:self.IV_SIZE]
+            return plain_data, token
         return plain_data
 
     @check_types
@@ -164,12 +184,18 @@ class BlockFileSystem:
 
         cipher_data = self.encrypt_block(data)
 
-        with self.file(True) as f:
-            f.seek(self.block_start(block_id))
-            f.write(cipher_data)
+        with self.lock:
+            with self.file(True) as f:
+                f.seek(self.block_start(block_id))
+                f.write(cipher_data)
+
+            token = cipher_data[:self.IV_SIZE]
+            self.block_cache[block_id] = data, token
+            if self.file_locked:
+                self.locked_tokens.add(token)
 
         if with_token:
-            return cipher_data[:self.IV_SIZE]
+            return token
 
     @check_types
     def swap_blocks(self, block_id1: int, block_id2: int):
@@ -179,33 +205,48 @@ class BlockFileSystem:
         if block_id1 == block_id2:
             return
 
-        with self.file(True) as f:
-            f.seek(self.block_start(block_id1))
-            block_1_data = f.read(self.PHYSICAL_BLOCK_SIZE)
-            f.seek(self.block_start(block_id2))
-            block_2_data = f.read(self.PHYSICAL_BLOCK_SIZE)
+        with self.lock:
+            with self.file(True) as f:
+                f.seek(self.block_start(block_id1))
+                block_1_data = f.read(self.PHYSICAL_BLOCK_SIZE)
+                f.seek(self.block_start(block_id2))
+                block_2_data = f.read(self.PHYSICAL_BLOCK_SIZE)
 
-            f.seek(self.block_start(block_id1))
-            f.write(block_2_data)
-            f.seek(self.block_start(block_id2))
-            f.write(block_1_data)
+                f.seek(self.block_start(block_id1))
+                f.write(block_2_data)
+                f.seek(self.block_start(block_id2))
+                f.write(block_1_data)
+
+            (self.block_cache[block_id1],
+             self.block_cache[block_id2]) = (self.block_cache[block_id2],
+                                             self.block_cache[block_id1])
 
     @check_types
     def wipe_block(self, block_id: int):
         assert block_id < self.total_blocks()
-        with self.file(True) as f:
-            f.seek(self.block_start(block_id))
-            f.write(b"\0" * self.PHYSICAL_BLOCK_SIZE)
+        with self.lock:
+            with self.file(True) as f:
+                f.seek(self.block_start(block_id))
+                f.write(b"\0" * self.PHYSICAL_BLOCK_SIZE)
+
+            self.block_cache[block_id] = None, self.UNINITALISED_IV
 
     @check_types
     def block_version(self, block_id: int, old_version: bytes=b""):
         assert block_id < self.total_blocks()
 
-        with self.file(False) as f:
-            f.seek(self.block_start(block_id))
-            iv = f.read(self.IV_SIZE)
+        with self.lock:
+            if self.file_locked and old_version in self.locked_tokens:
+                return False, old_version
 
-        return old_version != iv, iv
+            with self.file(False) as f:
+                f.seek(self.block_start(block_id))
+                iv = f.read(self.IV_SIZE)
+
+            if self.file_locked:
+                self.locked_tokens.add(iv)
+
+            return old_version != iv, iv
 
     def close(self):
         self._file.flush()
