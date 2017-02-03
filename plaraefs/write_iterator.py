@@ -79,3 +79,9 @@ class WriteIterator(FileIterator):
                         data_to_write = b"".join((old_data[:offset], data_to_write, old_data[-data_from_end:]))
 
                 self.fs.write_file_data(self.file_id, block_num, data_to_write)
+
+            if flush:
+                _, main_header = self.fs.get_file_header(self.file_id, 0)
+                if main_header.size < self.start:
+                    main_header.size = self.start
+                    self.fs.write_file_header(self.file_id, 0, main_header)

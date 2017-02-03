@@ -1,6 +1,6 @@
 from test_filesystem_low_level import fs
 from plaraefs.write_iterator import WriteIterator
-from plaraefs.filesystem import FileSystem
+from plaraefs.filesystem import FileSystem, FileHeader
 
 
 def test_take_unflushed(fs: FileSystem):
@@ -49,11 +49,12 @@ def test_small_single_write(fs: FileSystem):
     wi.write(b"abcdef" * 10, flush=True)
 
     data_after, token2 = fs.blockfs.read_block(file_id, with_token=True)
+    header = fs.pack_file_header(FileHeader(0, b"", len(b"abcdef" * 10), 0, []))
 
     assert token != token2
     assert data_after.index(b"a") == fs.FILE_HEADER_SIZE
     assert data_after[fs.FILE_HEADER_SIZE:fs.FILE_HEADER_SIZE + 60] == b"abcdef" * 10
-    assert data_before[:fs.FILE_HEADER_SIZE] + b"abcdef" * 10 + data_before[fs.FILE_HEADER_SIZE + 60:] == data_after
+    assert header + b"abcdef" * 10 + data_before[fs.FILE_HEADER_SIZE + 60:] == data_after
 
 
 def test_small_multi_write(fs: FileSystem):
@@ -69,10 +70,11 @@ def test_small_multi_write(fs: FileSystem):
     wi.write(None, flush=True)
 
     data_after, token2 = fs.blockfs.read_block(file_id, with_token=True)
+    header = fs.pack_file_header(FileHeader(0, b"", len(b"abcdef" * 10), 0, []))
 
     assert token != token2
     assert data_after[fs.FILE_HEADER_SIZE:fs.FILE_HEADER_SIZE + 60] == b"abcdef" * 10
-    assert data_before[:fs.FILE_HEADER_SIZE] + b"abcdef" * 10 + data_before[fs.FILE_HEADER_SIZE + 60:] == data_after
+    assert header + b"abcdef" * 10 + data_before[fs.FILE_HEADER_SIZE + 60:] == data_after
 
 
 def test_large_single_write(fs: FileSystem):
@@ -98,3 +100,5 @@ def test_large_single_write(fs: FileSystem):
         assert bdata[:len(corresponding_data)] == corresponding_data
         assert bdata[len(corresponding_data):].count(b"\0") == len(bdata[len(corresponding_data):])
         data_pos += len(bdata)
+
+    assert fs.get_file_header(file_id, 0)[1].size == len(data)
