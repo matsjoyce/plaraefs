@@ -38,6 +38,7 @@ class BlockFileSystem:
 
         self.backend = default_backend()
         self.block_reads = self.block_writes = 0
+        self.file_reads = self.file_writes = 0
         self.file_locked = False
         self.file_locked_write = False
 
@@ -55,10 +56,10 @@ class BlockFileSystem:
     def lock_file(self, write):
         with self.lock:
             if self.file_locked:
-                if write == self.file_locked_write or self.file_locked_write:
+                if not write or self.file_locked_write:
                     yield
                     return
-                raise RuntimeError("File locked in wrong mode")
+                raise RuntimeError("File locked in wrong mode, locked for read and need lock for write")
             try:
                 locking.lock_file(self._file, write)
                 self.file_locked = True
@@ -73,9 +74,9 @@ class BlockFileSystem:
     def file(self, write):
         with self.lock_file(write):
             if write:
-                self.block_writes += 1
+                self.file_writes += 1
             else:
-                self.block_reads += 1
+                self.file_reads += 1
             try:
                 yield self._file
             finally:
@@ -116,10 +117,6 @@ class BlockFileSystem:
     def block_start(self, block_id: int):
         return block_id * self.PHYSICAL_BLOCK_SIZE
 
-    @check_types
-    def block_end(self, block_id: int):
-        return (block_id + 1) * self.PHYSICAL_BLOCK_SIZE
-
     def total_blocks(self):
         size = self.fname.stat().st_size
         assert size % self.PHYSICAL_BLOCK_SIZE == 0
@@ -134,6 +131,7 @@ class BlockFileSystem:
             written = f.write(b"\0" * (self.PHYSICAL_BLOCK_SIZE * number))
 
         assert written == self.PHYSICAL_BLOCK_SIZE * number
+        self.block_writes += number
         return new_block_ids
 
     @check_types
@@ -177,7 +175,7 @@ class BlockFileSystem:
             self.block_cache[block_id] = plain_data, token
             if self.file_locked:
                 self.locked_tokens.add(token)
-
+        self.block_reads += 1
         if with_token:
             return plain_data, token
         return plain_data
@@ -197,6 +195,8 @@ class BlockFileSystem:
             self.block_cache[block_id] = data, token
             if self.file_locked:
                 self.locked_tokens.add(token)
+
+        self.block_writes += 1
 
         if with_token:
             return token
@@ -224,6 +224,7 @@ class BlockFileSystem:
             (self.block_cache[block_id1],
              self.block_cache[block_id2]) = (self.block_cache[block_id2],
                                              self.block_cache[block_id1])
+        self.block_writes += 2
 
     @check_types
     def wipe_block(self, block_id: int):
@@ -234,6 +235,7 @@ class BlockFileSystem:
                 f.write(b"\0" * self.PHYSICAL_BLOCK_SIZE)
 
             self.block_cache[block_id] = None, self.UNINITALISED_IV
+        self.block_writes += 1
 
     @check_types
     def block_version(self, block_id: int, old_version: bytes=b""):

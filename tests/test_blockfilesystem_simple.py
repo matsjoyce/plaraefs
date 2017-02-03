@@ -62,6 +62,16 @@ def test_swap_block(fs: BlockFileSystem):
     assert fs.read_block(0) == b"b" * BlockFileSystem.LOGICAL_BLOCK_SIZE
     assert fs.read_block(1) == b"a" * BlockFileSystem.LOGICAL_BLOCK_SIZE
 
+    fs.swap_blocks(0, 0)
+
+    assert fs.read_block(0) == b"b" * BlockFileSystem.LOGICAL_BLOCK_SIZE
+    assert fs.read_block(1) == b"a" * BlockFileSystem.LOGICAL_BLOCK_SIZE
+
+    fs.swap_blocks(0, 1)
+
+    assert fs.read_block(0) == b"a" * BlockFileSystem.LOGICAL_BLOCK_SIZE
+    assert fs.read_block(1) == b"b" * BlockFileSystem.LOGICAL_BLOCK_SIZE
+
 
 def test_read_write_blocks(fs: BlockFileSystem):
     random = os.urandom(32) * (BlockFileSystem.LOGICAL_BLOCK_SIZE // 32)
