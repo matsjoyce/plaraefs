@@ -71,6 +71,7 @@ File header continuation block
 ------------------------------
 
  - Starts `BLOCK_ID_SIZE` block id for the next file continuation block, 0 if there isn't one
+ - Followed by `BLOCK_ID_SIZE` block id for the previous file continuation block
  - Followed by 32 `BLOCK_ID_SIZE` block ids indicating the next blocks
  - Followed by data
 
@@ -117,11 +118,11 @@ Done...
 V2 stats:
 ```
 Writing 225.0 MiB
-Complete in 5.380427837371826 seconds 41.81823579849471 MiB/sec
+Complete in 5.243060111999512 seconds 42.91386999074348 MiB/sec
 Reading 225.0 MiB
-Complete 4.362006187438965 seconds 51.581770023142205 MiB/sec
+Complete 4.349150657653809 seconds 51.73423909885394 MiB/sec
 Writing chunk test
-Complete 0.38707947731018066 seconds 23.25103894048089 MiB/sec
+Complete 0.3792431354522705 seconds 23.731477668717595 MiB/sec
 Reading chunk test
-Complete 0.28144025802612305 seconds 31.978367498386202 MiB/sec
+Complete 0.2830231189727783 seconds 31.799522359392967 MiB/sec
 ```

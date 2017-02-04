@@ -38,11 +38,11 @@ class BlockFileSystem:
 
         self.backend = default_backend()
         self.block_reads = self.block_writes = 0
-        self.file_reads = self.file_writes = 0
         self.file_locked = False
         self.file_locked_write = False
 
         self.block_cache = lru.LRU(1024)
+        self.unflushed_writes = {}
         self.locked_tokens = set()
 
     @classmethod
@@ -66,6 +66,9 @@ class BlockFileSystem:
                 self.file_locked_write = write
                 yield
             finally:
+                if write:
+                    self.flush_writes()
+                    self._file.flush()
                 locking.unlock_file(self._file)
                 self.file_locked = False
                 self.locked_tokens.clear()
@@ -73,23 +76,20 @@ class BlockFileSystem:
     @contextlib.contextmanager
     def file(self, write):
         with self.lock_file(write):
-            if write:
-                self.file_writes += 1
-            else:
-                self.file_reads += 1
-            try:
-                yield self._file
-            finally:
-                self._file.flush()
+            yield self._file
 
-    @check_types
-    def encrypt_block(self, plaintext: bytes):
-        assert len(plaintext) == self.LOGICAL_BLOCK_SIZE
-
+    def new_token(self):
         iv = self.UNINITALISED_IV
         while iv == self.UNINITALISED_IV:
             iv = os.urandom(self.IV_SIZE)
+        return iv
 
+    @check_types
+    def encrypt_block(self, plaintext: bytes, iv: bytes=None):
+        assert len(plaintext) == self.LOGICAL_BLOCK_SIZE
+
+        if iv is None:
+            iv = self.new_token()
         cipher = Cipher(algorithms.AES(self.key), modes.GCM(iv), backend=self.backend)
         encryptor = cipher.encryptor()
         ciphertext = encryptor.update(plaintext) + encryptor.finalize()
@@ -141,11 +141,19 @@ class BlockFileSystem:
 
         new_total_blocks = total_blocks - number
         with self.file(True) as f:
+            for block_id in range(new_total_blocks, total_blocks):
+                self.unflushed_writes.pop(block_id, None)
             f.truncate(new_total_blocks * self.PHYSICAL_BLOCK_SIZE)
 
     @check_types
     def read_block(self, block_id: int, with_token: bool=False):
         # return None if the block is not initialised
+        try:
+            if with_token:
+                return self.unflushed_writes[block_id]
+            return self.unflushed_writes[block_id][0]
+        except KeyError:
+            pass
         try:
             cache_data, cache_token = self.block_cache[block_id]
             if self.file_locked and cache_token in self.locked_tokens:
@@ -180,9 +188,40 @@ class BlockFileSystem:
             return plain_data, token
         return plain_data
 
+    def flush_writes(self, only=None):
+        with self.file(True) as f:
+            for block_id, (data, token) in self.unflushed_writes.items():
+                if only and block_id not in only:
+                    continue
+                cipher_data = self.encrypt_block(data, iv=token)
+                f.seek(self.block_start(block_id))
+                f.write(cipher_data)
+                self.block_writes += 1
+            self.unflushed_writes.clear()
+
     @check_types
-    def write_block(self, block_id: int, data: bytes, with_token: bool=False):
+    def write_block(self, block_id: int, offset: int, data: bytes, with_token: bool=False):
         assert block_id < self.total_blocks()
+        assert offset + len(data) <= self.LOGICAL_BLOCK_SIZE
+
+        if len(data) != self.LOGICAL_BLOCK_SIZE:
+            new_token = self.new_token()
+            data_from_end = self.LOGICAL_BLOCK_SIZE - offset - len(data)
+            with self.file(True) as f:
+                old_data = self.read_block(block_id)
+                if old_data is None:
+                    data_to_write = b"".join((b"\0" * offset, data, b"\0" * data_from_end))
+                else:
+                    if data_from_end:
+                        data_to_write = b"".join((old_data[:offset], data, old_data[-data_from_end:]))
+                    else:
+                        data_to_write = b"".join((old_data[:offset], data))
+                self.unflushed_writes[block_id] = data_to_write, new_token
+                if self.file_locked:
+                    self.locked_tokens.add(new_token)
+                if with_token:
+                    return new_token
+                return
 
         cipher_data = self.encrypt_block(data)
 
@@ -210,6 +249,7 @@ class BlockFileSystem:
             return
 
         with self.lock:
+            self.flush_writes([block_id1, block_id2])
             with self.file(True) as f:
                 f.seek(self.block_start(block_id1))
                 block_1_data = f.read(self.PHYSICAL_BLOCK_SIZE)
@@ -230,6 +270,7 @@ class BlockFileSystem:
     def wipe_block(self, block_id: int):
         assert block_id < self.total_blocks()
         with self.lock:
+            self.unflushed_writes.pop(block_id, None)
             with self.file(True) as f:
                 f.seek(self.block_start(block_id))
                 f.write(b"\0" * self.PHYSICAL_BLOCK_SIZE)

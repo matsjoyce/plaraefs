@@ -56,7 +56,7 @@ def test_small_single_write(fs: FileSystem):
     assert data_after.index(b"a") == fs.FILE_HEADER_SIZE
     assert data_after[fs.FILE_HEADER_SIZE:fs.FILE_HEADER_SIZE + 60] == b"abcdef" * 10
     assert header + b"abcdef" * 10 + data_before[fs.FILE_HEADER_SIZE + 60:] == data_after
-    assert fs.blockfs.block_writes == writes_before + 2
+    assert fs.blockfs.block_writes == writes_before + 1
 
 
 def test_small_single_overwrite(fs: FileSystem):
@@ -98,7 +98,7 @@ def test_small_multi_write(fs: FileSystem):
     assert token != token2
     assert data_after[fs.FILE_HEADER_SIZE:fs.FILE_HEADER_SIZE + 60] == b"abcdef" * 10
     assert header + b"abcdef" * 10 + data_before[fs.FILE_HEADER_SIZE + 60:] == data_after
-    assert fs.blockfs.block_writes == writes_before + 4
+    assert fs.blockfs.block_writes == writes_before + 2
 
 
 def test_large_single_write(fs: FileSystem):
@@ -113,8 +113,7 @@ def test_large_single_write(fs: FileSystem):
     wi.write(data, flush=True)
 
     assert fs.get_file_header(file_id, 0)[1].size == len(data)
-    assert fs.blockfs.block_writes == (writes_before + fs.num_file_blocks(file_id) * 2
-                                       + fs.num_file_blocks(file_id) // fs.FILE_HEADER_INTERVAL + 2)
+    assert fs.blockfs.block_writes == (writes_before + fs.num_file_blocks(file_id) * 2)
 
     data_pos = 0
     for i in range(fs.num_file_blocks(file_id)):

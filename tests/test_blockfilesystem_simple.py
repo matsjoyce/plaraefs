@@ -39,7 +39,7 @@ def test_wipe_block(fs: BlockFileSystem):
 
     assert fs.read_block(0) is None
 
-    fs.write_block(0, b"a" * BlockFileSystem.LOGICAL_BLOCK_SIZE)
+    fs.write_block(0, 0, b"a" * BlockFileSystem.LOGICAL_BLOCK_SIZE)
 
     assert fs.read_block(0) == b"a" * BlockFileSystem.LOGICAL_BLOCK_SIZE
 
@@ -51,8 +51,8 @@ def test_wipe_block(fs: BlockFileSystem):
 def test_swap_block(fs: BlockFileSystem):
     fs.new_blocks(2)
 
-    fs.write_block(0, b"a" * BlockFileSystem.LOGICAL_BLOCK_SIZE)
-    fs.write_block(1, b"b" * BlockFileSystem.LOGICAL_BLOCK_SIZE)
+    fs.write_block(0, 0, b"a" * BlockFileSystem.LOGICAL_BLOCK_SIZE)
+    fs.write_block(1, 0, b"b" * BlockFileSystem.LOGICAL_BLOCK_SIZE)
 
     assert fs.read_block(0) == b"a" * BlockFileSystem.LOGICAL_BLOCK_SIZE
     assert fs.read_block(1) == b"b" * BlockFileSystem.LOGICAL_BLOCK_SIZE
@@ -77,13 +77,13 @@ def test_read_write_blocks(fs: BlockFileSystem):
     random = os.urandom(32) * (BlockFileSystem.LOGICAL_BLOCK_SIZE // 32)
     fs.new_blocks(1)
     assert fs.read_block(0) is None
-    fs.write_block(0, random)
+    fs.write_block(0, 0, random)
     assert fs.read_block(0) == random
 
 
 def test_new_version(fs: BlockFileSystem):
     fs.new_blocks(1)
-    fs.write_block(0, b"a" * BlockFileSystem.LOGICAL_BLOCK_SIZE)
+    fs.write_block(0, 0, b"a" * BlockFileSystem.LOGICAL_BLOCK_SIZE)
 
     _, token = fs.block_version(0)
     reload, token = fs.block_version(0, token)
@@ -95,6 +95,6 @@ def test_new_version(fs: BlockFileSystem):
 
     assert not reload
 
-    fs.write_block(0, b"a" * BlockFileSystem.LOGICAL_BLOCK_SIZE)
+    fs.write_block(0, 0, b"a" * BlockFileSystem.LOGICAL_BLOCK_SIZE)
     reload, token = fs.block_version(0, token)
     assert reload

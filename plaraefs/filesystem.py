@@ -142,12 +142,12 @@ class FileSystem:
     @check_types
     def write_superblock(self, superblock_id: int, bitmap: bitarray.bitarray):
         block_id = superblock_id * self.SUPERBLOCK_INTERVAL
-        self.blockfs.write_block(block_id, bitmap.tobytes())
+        self.blockfs.write_block(block_id, 0, bitmap.tobytes())
 
     @check_types
     def write_new_superblock(self, superblock_id: int):
         block_id = superblock_id * self.SUPERBLOCK_INTERVAL
-        self.blockfs.write_block(block_id, b"\x80" + b"\0" * (self.blockfs.LOGICAL_BLOCK_SIZE - 1))
+        self.blockfs.write_block(block_id, 0, b"\x80" + b"\0" * (self.blockfs.LOGICAL_BLOCK_SIZE - 1))
 
     @check_types
     def number_free_blocks(self, superblock_id: int):
@@ -233,13 +233,7 @@ class FileSystem:
                 else:
                     packed = self.pack_file_continuation_header(hdata)
 
-                old_data = self.blockfs.read_block(header_block_id)
-                if old_data is None:
-                    data = b"".join((packed, b"\0" * (self.blockfs.LOGICAL_BLOCK_SIZE - len(packed))))
-                else:
-                    data = b"".join((packed, old_data[len(packed):]))
-
-                self.blockfs.write_block(header_block_id, data)
+                self.blockfs.write_block(header_block_id, 0, packed)
 
                 if new_header_id:
                     hdata = FileContinuationHeader(0, header_block_id, self.make_block_id_container())
@@ -307,9 +301,7 @@ class FileSystem:
             packed = self.pack_file_continuation_header(data)
 
         with self.blockfs.lock_file(write=True):
-            old_data = self.blockfs.read_block(header_block_id)
-            blockdata = b"".join((packed, old_data[len(packed):]))
-            token = self.blockfs.write_block(header_block_id, blockdata, with_token=True)
+            token = self.blockfs.write_block(header_block_id, 0, packed, with_token=True)
 
         try:
             # Update header cache
@@ -342,8 +334,7 @@ class FileSystem:
         with self.blockfs.lock_file(write=True):
             block_id, = self.allocate_blocks(1)
             header = FileHeader(0, b"", 0, 0, self.make_block_id_container())
-            data = b"".join((self.pack_file_header(header), b"\0" * self.FILE_HEADER_DATA_SIZE))
-            self.blockfs.write_block(block_id, data)
+            self.blockfs.write_block(block_id, 0, self.pack_file_header(header))
         return block_id
 
     @check_types
@@ -375,14 +366,12 @@ class FileSystem:
         with self.blockfs.lock_file(write=True):
             header_block_id, hdata = self.get_file_header(file_id, header)
             if block_num:
-                self.blockfs.write_block(hdata.block_ids[block_num - 1], data)
+                self.blockfs.write_block(hdata.block_ids[block_num - 1], 0, data)
             else:
-                old_data = self.blockfs.read_block(header_block_id)
-                if header:
-                    data = b"".join((old_data[:self.FILE_CONTINUATION_HEADER_SIZE], data))
+                if header_block_id == file_id:
+                    token = self.blockfs.write_block(header_block_id, self.FILE_HEADER_SIZE, data, with_token=True)
                 else:
-                    data = b"".join((old_data[:self.FILE_HEADER_SIZE], data))
-                token = self.blockfs.write_block(header_block_id, data, with_token=True)
+                    token = self.blockfs.write_block(header_block_id, self.FILE_CONTINUATION_HEADER_SIZE, data, with_token=True)
                 try:
                     # Set token as we didn't change the header part
                     self.header_cache[(file_id, header)].token = token
