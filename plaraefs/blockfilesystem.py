@@ -10,9 +10,6 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from . import locking
 from .utils import check_types
 
-BITMAP_LENGTH = 8
-MAX_NUMBER_OF_BLOCKS = 2 ** BITMAP_LENGTH
-
 
 class BlockFileSystem:
     KEY_SIZE = 32  # 256 bit keys
@@ -139,7 +136,7 @@ class BlockFileSystem:
         with self.lock_file(True) as f:
             for block_id in range(new_total_blocks, total_blocks):
                 self.unflushed_writes.pop(block_id, None)
-            f.truncate(new_total_blocks * self.PHYSICAL_BLOCK_SIZE)
+            f.truncate(self.block_start(new_total_blocks))
 
     @check_types
     def read_block(self, block_id: int, with_token: bool=False):
@@ -156,9 +153,7 @@ class BlockFileSystem:
                 if token == self.UNINITALISED_IV:
                     return None
                 elif token == cache_token:
-                    if with_token:
-                        return cache_data, cache_token
-                    return cache_data
+                    return (cache_data, cache_token) if with_token else cache_data
                 cipher_data = token + f.read(self.PHYSICAL_BLOCK_SIZE - self.IV_SIZE)
 
             plain_data = self.decrypt_block(cipher_data)
@@ -167,9 +162,7 @@ class BlockFileSystem:
             if self.lock_file_locked:
                 self.locked_tokens.add(token)
         self.block_reads += 1
-        if with_token:
-            return plain_data, token
-        return plain_data
+        return (plain_data, token) if with_token else plain_data
 
     def flush_writes(self, only=None):
         with self.lock_file(True) as f:
@@ -197,14 +190,12 @@ class BlockFileSystem:
                 old_data = self.read_block(block_id)
                 if old_data is None:
                     data_to_write = b"".join((b"\0" * offset, data, b"\0" * data_from_end))
+                elif data_from_end:
+                    data_to_write = b"".join((old_data[:offset], data, old_data[-data_from_end:]))
                 else:
-                    if data_from_end:
-                        data_to_write = b"".join((old_data[:offset], data, old_data[-data_from_end:]))
-                    else:
-                        data_to_write = b"".join((old_data[:offset], data))
+                    data_to_write = b"".join((old_data[:offset], data))
                 self.unflushed_writes[block_id] = data_to_write, new_token
-                if self.lock_file_locked:
-                    self.locked_tokens.add(new_token)
+                self.locked_tokens.add(new_token)
                 if with_token:
                     return new_token
                 return
@@ -218,8 +209,7 @@ class BlockFileSystem:
 
             token = cipher_data[:self.IV_SIZE]
             self.block_cache[block_id] = data, token
-            if self.lock_file_locked:
-                self.locked_tokens.add(token)
+            self.locked_tokens.add(token)
 
         self.block_writes += 1
 

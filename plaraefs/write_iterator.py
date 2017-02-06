@@ -48,9 +48,8 @@ class WriteIterator(FileIterator):
 
         while data_to_write:
             self.start += len(data_to_write)
-            data_from_end = block_size - offset - len(data_to_write)
 
-            yield block_num, offset, data_from_end, data_to_write
+            yield block_num, offset, data_to_write
 
             block_num, offset = self.block_from_offset(self.start)
             block_size = self.fs.file_data_in_block(block_num)
@@ -67,24 +66,12 @@ class WriteIterator(FileIterator):
 
         with self.fs.blockfs.lock_file(write=True):
             total_blocks = self.fs.num_file_blocks(self.file_id)
-            for block_num, offset, data_from_end, data_to_write in blocks_to_write:
-                assert len(data_to_write) + data_from_end + offset == self.fs.file_data_in_block(block_num)
+            for block_num, offset, data_to_write in blocks_to_write:
                 if block_num >= total_blocks:
                     self.fs.extend_file_blocks(self.file_id, blocks_to_write[-1][0] + 1, total_blocks - 1)
                     total_blocks = blocks_to_write[-1][0] + 1
-                if offset or data_from_end:
-                    old_data = self.fs.read_file_data(self.file_id, block_num)
-                    if old_data is None:
-                        data_to_write = b"".join((b"\0" * offset, data_to_write, b"\0" * data_from_end))
-                        assert len(data_to_write) == self.fs.file_data_in_block(block_num)
-                    else:
-                        if data_from_end:
-                            data_to_write = b"".join((old_data[:offset], data_to_write, old_data[-data_from_end:]))
-                        else:
-                            data_to_write = b"".join((old_data[:offset], data_to_write))
-                        assert len(data_to_write) == self.fs.file_data_in_block(block_num)
 
-                self.fs.write_file_data(self.file_id, block_num, data_to_write)
+                self.fs.write_file_data(self.file_id, block_num, offset, data_to_write)
 
             if flush:
                 _, main_header = self.fs.get_file_header(self.file_id, 0)

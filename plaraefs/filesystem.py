@@ -1,9 +1,8 @@
-import array
 import bitarray
 import recordclass
 import itertools
-import sys
 import lru
+import struct
 
 
 from .blockfilesystem import BlockFileSystem
@@ -23,35 +22,21 @@ class FileSystem:
     GROUP_TAG_SIZE = 16
     FILESIZE_SIZE = 8
     BLOCK_IDS_PER_HEADER = 32
-
-    @property
-    def FILE_HEADER_SIZE(self):
-        return (1 + self.GROUP_TAG_SIZE + self.FILESIZE_SIZE +
-                (self.BLOCK_IDS_PER_HEADER + 1) * self.blockfs.BLOCK_ID_SIZE)
-
-    @property
-    def FILE_HEADER_DATA_SIZE(self):
-        return self.blockfs.LOGICAL_BLOCK_SIZE - self.FILE_HEADER_SIZE
-
-    @property
-    def FILE_CONTINUATION_HEADER_SIZE(self):
-        return (self.BLOCK_IDS_PER_HEADER + 2) * self.blockfs.BLOCK_ID_SIZE
-
-    @property
-    def FILE_CONTINUATION_HEADER_DATA_SIZE(self):
-        return self.blockfs.LOGICAL_BLOCK_SIZE - self.FILE_CONTINUATION_HEADER_SIZE
-
-    @property
-    def FILE_HEADER_INTERVAL(self):
-        return self.BLOCK_IDS_PER_HEADER + 1
-
-    @property
-    def SUPERBLOCK_INTERVAL(self):
-        return self.blockfs.LOGICAL_BLOCK_SIZE * 8
+    FILE_HEADER_INTERVAL = BLOCK_IDS_PER_HEADER + 1
 
     def __init__(self, blockfs: BlockFileSystem):
         self.blockfs = blockfs
         self.header_cache = lru.LRU(1024)
+
+        self.FILE_HEADER_SIZE = (1 + self.GROUP_TAG_SIZE + self.FILESIZE_SIZE +
+                                 (self.BLOCK_IDS_PER_HEADER + 1) * self.blockfs.BLOCK_ID_SIZE)
+        self.FILE_HEADER_DATA_SIZE = self.blockfs.LOGICAL_BLOCK_SIZE - self.FILE_HEADER_SIZE
+        self.FILE_CONTINUATION_HEADER_SIZE = (self.BLOCK_IDS_PER_HEADER + 2) * self.blockfs.BLOCK_ID_SIZE
+        self.FILE_CONTINUATION_HEADER_DATA_SIZE = self.blockfs.LOGICAL_BLOCK_SIZE - self.FILE_CONTINUATION_HEADER_SIZE
+        self.SUPERBLOCK_INTERVAL = self.blockfs.LOGICAL_BLOCK_SIZE * 8
+
+        self.file_header_struct = struct.Struct(f"<B{self.GROUP_TAG_SIZE}s{self.BLOCK_IDS_PER_HEADER + 2}Q")
+        self.file_continuation_header_struct = struct.Struct(f"<{self.BLOCK_IDS_PER_HEADER + 2}Q")
 
     @classmethod
     @check_types
@@ -61,82 +46,43 @@ class FileSystem:
         fs = cls(blockfs)
         fs.write_new_superblock(0)
 
-    def make_block_id_container(self, default=()):
-        if self.blockfs.BLOCK_ID_SIZE == 8:
-            return array.array("Q", default)
-        else:  # pragma: no cover
-            raise RuntimeError("No array size")
-
-    @check_types
-    def unpack_block_ids(self, ids: bytes):
-        arr = self.make_block_id_container()
-        arr.frombytes(ids)
-        if sys.byteorder != "little":  # pragma: no cover
-            arr.byteswap()
-        return arr
-
-    @check_types
-    def pack_block_ids(self, ids: array.array):
-        if sys.byteorder != "little":  # pragma: no cover
-            arr = ids.copy()
-            arr.byteswap()
-        else:
-            arr = ids
-        return arr.tobytes()
-
     @check_types
     def unpack_file_header(self, data: bytes):
-        start = 0
-        mode = data[0]
-        start += 1
-        group_tag = data[start:start + self.GROUP_TAG_SIZE].strip(b"\0")
-        start += self.GROUP_TAG_SIZE
-        size = int.from_bytes(data[start:start + self.FILESIZE_SIZE], "little", signed=False)
-        start += self.FILESIZE_SIZE
-        ids_data = data[start:start + self.blockfs.BLOCK_ID_SIZE * (self.BLOCK_IDS_PER_HEADER + 1)]
-        block_ids = self.unpack_block_ids(ids_data)
-        next_header = block_ids.pop(0)
+        mode, group_tag, size, next_header, *block_ids = self.file_header_struct.unpack(data[:self.FILE_HEADER_SIZE])
         if not block_ids[-1]:
             block_ids = block_ids[:block_ids.index(0)]
-        return FileHeader(mode, group_tag, size, next_header, block_ids)
+        return FileHeader(mode, group_tag.rstrip(b"\0"), size, next_header, block_ids)
 
     @check_types
     def pack_file_header(self, header: FileHeader):
-        arr = self.make_block_id_container()
-        arr.append(header.next_header)
-        arr.extend(header.block_ids)
-        arr.extend([0] * (self.BLOCK_IDS_PER_HEADER + 1 - len(arr)))
-        block_ids = self.pack_block_ids(arr)
-
-        return b"".join((bytes((header.mode,)),
-                         header.group_tag.ljust(self.GROUP_TAG_SIZE, b"\0"),
-                         header.size.to_bytes(self.FILESIZE_SIZE, "little", signed=False),
-                         block_ids))
+        return self.file_header_struct.pack(header.mode,
+                                            header.group_tag,
+                                            header.size,
+                                            header.next_header,
+                                            *header.block_ids,
+                                            *([0] * (self.BLOCK_IDS_PER_HEADER - len(header.block_ids))))
 
     @check_types
     def unpack_file_continuation_header(self, data: bytes):
-        block_ids = self.unpack_block_ids(data[:self.blockfs.BLOCK_ID_SIZE * (self.BLOCK_IDS_PER_HEADER + 2)])
-        next_header = block_ids.pop(0)
-        prev_header = block_ids.pop(0)
+        (next_header,
+         prev_header,
+         *block_ids) = self.file_continuation_header_struct.unpack(data[:self.FILE_CONTINUATION_HEADER_SIZE])
         if not block_ids[-1]:
             block_ids = block_ids[:block_ids.index(0)]
         return FileContinuationHeader(next_header, prev_header, block_ids)
 
     @check_types
     def pack_file_continuation_header(self, header: FileContinuationHeader):
-        arr = self.make_block_id_container()
-        arr.append(header.next_header)
-        arr.append(header.prev_header)
-        arr.extend(header.block_ids)
-        arr.extend([0] * (self.BLOCK_IDS_PER_HEADER + 2 - len(arr)))
-        return self.pack_block_ids(arr)
+        return self.file_continuation_header_struct.pack(header.next_header,
+                                                         header.prev_header,
+                                                         *header.block_ids,
+                                                         *([0] * (self.BLOCK_IDS_PER_HEADER - len(header.block_ids))))
 
     @check_types
     def read_superblock(self, superblock_id: int):
         block_id = superblock_id * self.SUPERBLOCK_INTERVAL
-        data = self.blockfs.read_block(block_id)
         arr = bitarray.bitarray()
-        arr.frombytes(data)
+        arr.frombytes(self.blockfs.read_block(block_id))
         return arr
 
     @check_types
@@ -151,12 +97,11 @@ class FileSystem:
 
     @check_types
     def number_free_blocks(self, superblock_id: int):
-        bitmap = self.read_superblock(superblock_id)
-        return bitmap.count(False)
+        return self.read_superblock(superblock_id).count(False)
 
     @check_types
     def allocate_blocks(self, number: int):
-        blocks = self.make_block_id_container()
+        blocks = []
         new_blocks = 0
         with self.blockfs.lock_file(write=True):
             total_size = self.blockfs.total_blocks()
@@ -180,22 +125,22 @@ class FileSystem:
         return blocks
 
     @check_types
-    def deallocate_blocks(self, block_ids: array.array):
+    def deallocate_blocks(self, block_ids: list):
         superblocks = {}
         with self.blockfs.lock_file(write=True):
             for block_id in block_ids:
                 self.blockfs.wipe_block(block_id)
-                superblock_id = block_id // self.SUPERBLOCK_INTERVAL
+                superblock_id, block_id = divmod(block_id, self.SUPERBLOCK_INTERVAL)
                 if superblock_id not in superblocks:
                     superblocks[superblock_id] = self.read_superblock(superblock_id)
-                superblocks[superblock_id][block_id % self.SUPERBLOCK_INTERVAL] = False
+                superblocks[superblock_id][block_id] = False
 
             for superblock_id, bitmap in superblocks.items():
                 self.write_superblock(superblock_id, bitmap)
 
     @check_types
     def num_file_blocks(self, file_id: int):
-        last_header, header_block_id, hdata = self.get_last_file_header(file_id)
+        last_header, _, hdata = self.get_last_file_header(file_id)
         last_block = len(hdata.block_ids)
         return last_header * self.FILE_HEADER_INTERVAL + last_block + 1
 
@@ -236,7 +181,7 @@ class FileSystem:
                 self.blockfs.write_block(header_block_id, 0, packed)
 
                 if new_header_id:
-                    hdata = FileContinuationHeader(0, header_block_id, self.make_block_id_container())
+                    hdata = FileContinuationHeader(0, header_block_id, [])
                 header_block_id = new_header_id
 
     @check_types
@@ -284,34 +229,29 @@ class FileSystem:
                 data, token = self.blockfs.read_block(block_id, with_token=True)
             data = self.unpack_file_continuation_header(data)
         else:
-            block_id = file_id
             with self.blockfs.lock_file(write=False):
                 data, token = self.blockfs.read_block(file_id, with_token=True)
             data = self.unpack_file_header(data)
+            block_id = file_id
 
         self.header_cache[(file_id, header_num)] = HeaderCache(block_id, data, token)
         return block_id, data
 
     @check_types
     def write_file_header(self, file_id: int, header_num: int, data):
-        header_block_id, _ = self.get_file_header(file_id, header_num)
-        if header_num == 0:
-            packed = self.pack_file_header(data)
-        else:
+        if header_num:
             packed = self.pack_file_continuation_header(data)
+        else:
+            packed = self.pack_file_header(data)
 
         with self.blockfs.lock_file(write=True):
-            token = self.blockfs.write_block(header_block_id, 0, packed, with_token=True)
-
-        try:
-            # Update header cache
-            self.header_cache[(file_id, header_num)].token = token
+            header_block_id, _ = self.get_file_header(file_id, header_num)
+            x = self.header_cache[(file_id, header_num)]
+            x.token = self.blockfs.write_block(header_block_id, 0, packed, with_token=True)
             if header_num:
-                self.header_cache[(file_id, header_num)].hdata = FileContinuationHeader(*data)
+                x.hdata = FileContinuationHeader(*data)
             else:
-                self.header_cache[(file_id, header_num)].hdata = FileHeader(*data)
-        except KeyError:
-            pass
+                x.hdata = FileHeader(*data)
 
     @check_types
     def get_last_file_header(self, file_id: int):
@@ -333,47 +273,49 @@ class FileSystem:
     def create_new_file(self):
         with self.blockfs.lock_file(write=True):
             block_id, = self.allocate_blocks(1)
-            header = FileHeader(0, b"", 0, 0, self.make_block_id_container())
+            header = FileHeader(0, b"", 0, 0, [])
             self.blockfs.write_block(block_id, 0, self.pack_file_header(header))
         return block_id
 
     @check_types
     def file_data_in_block(self, block_num: int):
         header, block_num = divmod(block_num, self.FILE_HEADER_INTERVAL)
-        if block_num == 0:
-            if header == 0:
-                return self.FILE_HEADER_DATA_SIZE
+
+        if block_num:
+            return self.blockfs.LOGICAL_BLOCK_SIZE
+        elif header:
             return self.FILE_CONTINUATION_HEADER_DATA_SIZE
-        return self.blockfs.LOGICAL_BLOCK_SIZE
+        else:
+            return self.FILE_HEADER_DATA_SIZE
 
     @check_types
     def read_file_data(self, file_id: int, block_num: int):
-        data_len = self.file_data_in_block(block_num)
         header, block_num = divmod(block_num, self.FILE_HEADER_INTERVAL)
 
         with self.blockfs.lock_file(write=False):
             header_block_id, hdata = self.get_file_header(file_id, header)
-            if not block_num:
-                return self.blockfs.read_block(header_block_id)[-data_len:]
-            else:
+            if block_num:
                 return self.blockfs.read_block(hdata.block_ids[block_num - 1])
+            elif header:
+                return self.blockfs.read_block(header_block_id)[self.FILE_CONTINUATION_HEADER_SIZE:]
+            else:
+                return self.blockfs.read_block(header_block_id)[self.FILE_HEADER_SIZE:]
 
     @check_types
-    def write_file_data(self, file_id: int, block_num: int, data: bytes):
-        assert len(data) == self.file_data_in_block(block_num)
+    def write_file_data(self, file_id: int, block_num: int, offset: int, data: bytes):
         header, block_num = divmod(block_num, self.FILE_HEADER_INTERVAL)
 
         with self.blockfs.lock_file(write=True):
             header_block_id, hdata = self.get_file_header(file_id, header)
             if block_num:
-                self.blockfs.write_block(hdata.block_ids[block_num - 1], 0, data)
+                self.blockfs.write_block(hdata.block_ids[block_num - 1], offset, data)
+            elif header:
+                # Set token as we didn't change the header part
+                self.header_cache[(file_id, header)].token = self.blockfs.write_block(header_block_id,
+                                                                                      self.FILE_CONTINUATION_HEADER_SIZE
+                                                                                      + offset,
+                                                                                      data, with_token=True)
             else:
-                if header_block_id == file_id:
-                    token = self.blockfs.write_block(header_block_id, self.FILE_HEADER_SIZE, data, with_token=True)
-                else:
-                    token = self.blockfs.write_block(header_block_id, self.FILE_CONTINUATION_HEADER_SIZE, data, with_token=True)
-                try:
-                    # Set token as we didn't change the header part
-                    self.header_cache[(file_id, header)].token = token
-                except KeyError:
-                    pass
+                self.header_cache[(file_id, header)].token = self.blockfs.write_block(header_block_id,
+                                                                                      self.FILE_HEADER_SIZE + offset,
+                                                                                      data, with_token=True)
