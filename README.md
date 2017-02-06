@@ -118,11 +118,11 @@ Done...
 V2 stats:
 ```
 Writing 225.0 MiB
-Complete in 5.243060111999512 seconds 42.91386999074348 MiB/sec
+Complete in 4.824395656585693 seconds 46.63796587513643 MiB/sec
 Reading 225.0 MiB
-Complete 4.349150657653809 seconds 51.73423909885394 MiB/sec
+Complete 3.963587760925293 seconds 56.766751128395384 MiB/sec
 Writing chunk test
-Complete 0.3792431354522705 seconds 23.731477668717595 MiB/sec
+Complete 0.3535957336425781 seconds 25.452795788247226 MiB/sec
 Reading chunk test
-Complete 0.2830231189727783 seconds 31.799522359392967 MiB/sec
+Complete 0.23907232284545898 seconds 37.64551200607933 MiB/sec
 ```
