@@ -2,7 +2,7 @@ import contextlib
 import os
 import pathlib
 import threading
-import lru
+import pylru
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -31,14 +31,14 @@ class BlockFileSystem:
         self.fname = pathlib.Path(fname)
         assert self.fname.suffix == self.FS_EXT
         assert self.fname.stat().st_size % self.PHYSICAL_BLOCK_SIZE == 0
-        self._file = open(self.fname, "r+b", 0)
+        self._file = open(str(self.fname), "r+b", 0)
 
         self.backend = default_backend()
         self.block_reads = self.block_writes = 0
         self.lock_file_locked = False
         self.lock_file_locked_write = False
 
-        self.block_cache = lru.LRU(1024)
+        self.block_cache = pylru.lrucache(1024)
         self.unflushed_writes = {}
         self.locked_tokens = set()
 
@@ -46,7 +46,7 @@ class BlockFileSystem:
     def initialise(cls, fname):
         fname = pathlib.Path(fname)
         assert fname.suffix == cls.FS_EXT
-        with open(fname, "x"):
+        with open(str(fname), "x"):
             pass
 
     @contextlib.contextmanager

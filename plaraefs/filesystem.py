@@ -1,7 +1,7 @@
 import bitarray
-import recordclass
+import namedlist
 import itertools
-import lru
+import pylru
 import struct
 
 
@@ -9,9 +9,9 @@ from .blockfilesystem import BlockFileSystem
 from .utils import check_types
 
 
-FileHeader = recordclass.recordclass("FileHeader", ("mode", "group_tag", "size", "next_header", "block_ids"))
-FileContinuationHeader = recordclass.recordclass("FileContinuationHeader", ("next_header", "prev_header", "block_ids"))
-HeaderCache = recordclass.recordclass("HeaderCache", ("block_id", "hdata", "token"))
+FileHeader = namedlist.namedlist("FileHeader", ("mode", "group_tag", "size", "next_header", "block_ids"))
+FileContinuationHeader = namedlist.namedlist("FileContinuationHeader", ("next_header", "prev_header", "block_ids"))
+HeaderCache = namedlist.namedlist("HeaderCache", ("block_id", "hdata", "token"))
 
 singleton_0_bitarray = bitarray.bitarray("0")
 singleton_1_bitarray = bitarray.bitarray("1")
@@ -26,7 +26,7 @@ class FileSystem:
 
     def __init__(self, blockfs: BlockFileSystem):
         self.blockfs = blockfs
-        self.header_cache = lru.LRU(1024)
+        self.header_cache = pylru.lrucache(1024)
 
         self.FILE_HEADER_SIZE = (1 + self.GROUP_TAG_SIZE + self.FILESIZE_SIZE +
                                  (self.BLOCK_IDS_PER_HEADER + 1) * self.blockfs.BLOCK_ID_SIZE)
