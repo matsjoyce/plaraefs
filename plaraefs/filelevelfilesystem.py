@@ -4,12 +4,13 @@ import itertools
 import pylru
 import struct
 
-
-from .blockfilesystem import BlockFileSystem
+from .blocklevelfilesystem import BlockLevelFilesystem
+from .read_iterator import ReadIterator
+from .write_iterator import WriteIterator
 from .utils import check_types
 
 
-FileHeader = namedlist.namedlist("FileHeader", ("mode", "group_tag", "size", "next_header", "block_ids"))
+FileHeader = namedlist.namedlist("FileHeader", ("file_type", "group_tag", "size", "next_header", "block_ids"))
 FileContinuationHeader = namedlist.namedlist("FileContinuationHeader", ("next_header", "prev_header", "block_ids"))
 HeaderCache = namedlist.namedlist("HeaderCache", ("block_id", "hdata", "token"))
 
@@ -17,14 +18,13 @@ singleton_0_bitarray = bitarray.bitarray("0")
 singleton_1_bitarray = bitarray.bitarray("1")
 
 
-class FileSystem:
-    FILENAME_SIZE = 256
+class FileLevelFilesystem:
     GROUP_TAG_SIZE = 16
     FILESIZE_SIZE = 8
     BLOCK_IDS_PER_HEADER = 32
     FILE_HEADER_INTERVAL = BLOCK_IDS_PER_HEADER + 1
 
-    def __init__(self, blockfs: BlockFileSystem):
+    def __init__(self, blockfs: BlockLevelFilesystem):
         self.blockfs = blockfs
         self.header_cache = pylru.lrucache(1024)
 
@@ -40,22 +40,22 @@ class FileSystem:
 
     @classmethod
     @check_types
-    def initialise(cls, blockfs: BlockFileSystem):
-        blocks = blockfs.new_blocks(2)
-        assert blocks == [0, 1]
+    def initialise(cls, blockfs: BlockLevelFilesystem):
+        blocks = blockfs.new_blocks(1)
+        assert blocks == [0]
         fs = cls(blockfs)
         fs.write_new_superblock(0)
 
     @check_types
     def unpack_file_header(self, data: bytes):
-        mode, group_tag, size, next_header, *block_ids = self.file_header_struct.unpack(data[:self.FILE_HEADER_SIZE])
+        file_type, group_tag, size, next_header, *block_ids = self.file_header_struct.unpack(data[:self.FILE_HEADER_SIZE])
         if not block_ids[-1]:
             block_ids = block_ids[:block_ids.index(0)]
-        return FileHeader(mode, group_tag.rstrip(b"\0"), size, next_header, block_ids)
+        return FileHeader(file_type, group_tag.rstrip(b"\0"), size, next_header, block_ids)
 
     @check_types
     def pack_file_header(self, header: FileHeader):
-        return self.file_header_struct.pack(header.mode,
+        return self.file_header_struct.pack(header.file_type,
                                             header.group_tag,
                                             header.size,
                                             header.next_header,
@@ -145,6 +145,22 @@ class FileSystem:
         return last_header * self.FILE_HEADER_INTERVAL + last_block + 1
 
     @check_types
+    def block_from_offset(self, offset: int):
+        if offset < self.FILE_HEADER_DATA_SIZE:
+            return 0, offset
+        offset -= self.FILE_HEADER_DATA_SIZE
+        header, block_and_stuff = divmod(offset,
+                                         self.blockfs.LOGICAL_BLOCK_SIZE * self.BLOCK_IDS_PER_HEADER
+                                         + self.FILE_CONTINUATION_HEADER_DATA_SIZE)
+        block, offset = divmod(block_and_stuff, self.blockfs.LOGICAL_BLOCK_SIZE)
+        if block == self.BLOCK_IDS_PER_HEADER:
+            header += 1
+            block = 0
+        else:
+            block += 1
+        return header * self.FILE_HEADER_INTERVAL + block, offset
+
+    @check_types
     def extend_file_blocks(self, file_id: int, block_num: int, last_block: int=None):
         with self.blockfs.lock_file(write=True):
             if last_block is None:
@@ -213,6 +229,15 @@ class FileSystem:
             self.write_file_header(file_id, last_header, hdata)
             self.deallocate_blocks(blocks_to_free)
 
+    def truncate_file_size(self, file_id: int, size: int):
+        assert size >= 0
+        last_block, _ = self.block_from_offset(size)
+        with self.blockfs.lock_file(write=True):
+            self.truncate_file_blocks(file_id, last_block + 1)
+            _, header = self.get_file_header(file_id, 0)
+            header.size = size
+            self.write_file_header(file_id, 0, header)
+
     @check_types
     def get_file_header(self, file_id: int, header_num: int):
         try:
@@ -270,10 +295,10 @@ class FileSystem:
                 block_id, data = self.get_file_header(file_id, start)
         return start, block_id, data
 
-    def create_new_file(self):
+    def create_new_file(self, file_type):
         with self.blockfs.lock_file(write=True):
             block_id, = self.allocate_blocks(1)
-            header = FileHeader(0, b"", 0, 0, [])
+            header = FileHeader(file_type, b"", 0, 0, [])
             self.blockfs.write_block(block_id, 0, self.pack_file_header(header))
         return block_id
 
@@ -319,3 +344,11 @@ class FileSystem:
                 self.header_cache[(file_id, header)].token = self.blockfs.write_block(header_block_id,
                                                                                       self.FILE_HEADER_SIZE + offset,
                                                                                       data, with_token=True)
+
+    @check_types
+    def reader(self, file_id: int, start: int=0):
+        return ReadIterator(self, file_id, start)
+
+    @check_types
+    def writer(self, file_id: int, start: int=0):
+        return WriteIterator(self, file_id, start)

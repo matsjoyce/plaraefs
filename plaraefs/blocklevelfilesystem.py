@@ -11,7 +11,7 @@ from . import locking
 from .utils import check_types
 
 
-class BlockFileSystem:
+class BlockLevelFilesystem:
     KEY_SIZE = 32  # 256 bit keys
     IV_SIZE = 16  # 128 bit IV
     TAG_SIZE = 16  # 128 bit AEAD tag
@@ -23,14 +23,16 @@ class BlockFileSystem:
     FS_EXT = ".plaraefs"
     BLOCK_ID_SIZE = 8
 
-    def __init__(self, fname, key: bytes):
+    @check_types
+    def __init__(self, fname, key: bytes, offset: int=0):
         self.lock = threading.RLock()
         self.key = key
+        self.offset = offset
         assert len(self.key) == self.KEY_SIZE
 
         self.fname = pathlib.Path(fname)
         assert self.fname.suffix == self.FS_EXT
-        assert self.fname.stat().st_size % self.PHYSICAL_BLOCK_SIZE == 0
+        assert (self.fname.stat().st_size - offset) % self.PHYSICAL_BLOCK_SIZE == 0
         self._file = open(str(self.fname), "r+b", 0)
 
         self.backend = default_backend()
@@ -43,11 +45,13 @@ class BlockFileSystem:
         self.locked_tokens = set()
 
     @classmethod
-    def initialise(cls, fname):
+    @check_types
+    def initialise(cls, fname, key: bytes, offset: int=0):
         fname = pathlib.Path(fname)
         assert fname.suffix == cls.FS_EXT
-        with open(str(fname), "x"):
-            pass
+        assert len(key) == cls.KEY_SIZE
+        with open(str(fname), "xb") as f:
+            f.write(b"\0" * offset)
 
     @contextlib.contextmanager
     def lock_file(self, write):
@@ -108,10 +112,10 @@ class BlockFileSystem:
 
     @check_types
     def block_start(self, block_id: int):
-        return block_id * self.PHYSICAL_BLOCK_SIZE
+        return block_id * self.PHYSICAL_BLOCK_SIZE + self.offset
 
     def total_blocks(self):
-        size = self.fname.stat().st_size
+        size = self.fname.stat().st_size - self.offset
         assert size % self.PHYSICAL_BLOCK_SIZE == 0
         return size // self.PHYSICAL_BLOCK_SIZE
 

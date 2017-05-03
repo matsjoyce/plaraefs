@@ -11,7 +11,7 @@ class ReadIterator(FileIterator):
                 size = min(size, total_file_size - self.start)
 
             while size:
-                block_num, offset = self.block_from_offset(self.start)
+                block_num, offset = self.fs.block_from_offset(self.start)
                 data = self.fs.read_file_data(self.file_id, block_num)
                 chunk = data[offset:offset + size]
                 yield chunk

@@ -42,7 +42,7 @@ class WriteIterator(FileIterator):
         return data
 
     def blocks_to_write(self, flush=False):
-        block_num, offset = self.block_from_offset(self.start)
+        block_num, offset = self.fs.block_from_offset(self.start)
         block_size = self.fs.file_data_in_block(block_num)
         data_to_write = self.take_unflushed(block_size - offset, force=flush)
 
@@ -51,7 +51,7 @@ class WriteIterator(FileIterator):
 
             yield block_num, offset, data_to_write
 
-            block_num, offset = self.block_from_offset(self.start)
+            block_num, offset = self.fs.block_from_offset(self.start)
             block_size = self.fs.file_data_in_block(block_num)
             data_to_write = self.take_unflushed(block_size - offset, force=flush)
 
@@ -78,3 +78,10 @@ class WriteIterator(FileIterator):
                 if main_header.size < self.start:
                     main_header.size = self.start
                     self.fs.write_file_header(self.file_id, 0, main_header)
+
+    def flush(self):
+        self.write(None, flush=True)
+
+    def seek(self, position):
+        self.flush()
+        super().seek(position)

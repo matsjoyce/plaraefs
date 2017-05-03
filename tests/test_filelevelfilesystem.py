@@ -4,8 +4,8 @@ import os
 import random
 import bitarray
 
-from plaraefs.blockfilesystem import BlockFileSystem
-from plaraefs.filesystem import FileSystem, FileHeader, FileContinuationHeader
+from plaraefs.blocklevelfilesystem import BlockLevelFilesystem
+from plaraefs.filelevelfilesystem import FileLevelFilesystem, FileHeader, FileContinuationHeader
 
 
 @pytest.fixture()
@@ -14,15 +14,15 @@ def fs():
     location = pathlib.Path("test_bfs.plaraefs")
     if location.exists():
         location.unlink()
-    BlockFileSystem.initialise(location)
-    bfs = BlockFileSystem(location, key)
-    FileSystem.initialise(bfs)
-    yield FileSystem(bfs)
+    BlockLevelFilesystem.initialise(location, key)
+    bfs = BlockLevelFilesystem(location, key)
+    FileLevelFilesystem.initialise(bfs)
+    yield FileLevelFilesystem(bfs)
     bfs.close()
     location.unlink()
 
 
-def test_file_header(fs: FileSystem):
+def test_file_header(fs: FileLevelFilesystem):
     header = FileHeader(0, b"stuff", 0, 0, [])
     assert header == fs.unpack_file_header(fs.pack_file_header(header))
 
@@ -31,7 +31,7 @@ def test_file_header(fs: FileSystem):
     assert header == fs.unpack_file_header(fs.pack_file_header(header))
 
 
-def test_file_continuation_header(fs: FileSystem):
+def test_file_continuation_header(fs: FileLevelFilesystem):
     header = FileContinuationHeader(0, 0, [])
     assert header == fs.unpack_file_continuation_header(fs.pack_file_continuation_header(header))
 
@@ -40,7 +40,7 @@ def test_file_continuation_header(fs: FileSystem):
     assert header == fs.unpack_file_continuation_header(fs.pack_file_continuation_header(header))
 
 
-def test_data_in_block(fs: FileSystem):
+def test_data_in_block(fs: FileLevelFilesystem):
     assert fs.file_data_in_block(0) == fs.FILE_HEADER_DATA_SIZE
     assert fs.file_data_in_block(1) == fs.blockfs.LOGICAL_BLOCK_SIZE
     assert fs.file_data_in_block(fs.BLOCK_IDS_PER_HEADER) == fs.blockfs.LOGICAL_BLOCK_SIZE
@@ -48,7 +48,7 @@ def test_data_in_block(fs: FileSystem):
     assert fs.file_data_in_block(fs.FILE_HEADER_INTERVAL + 1) == fs.blockfs.LOGICAL_BLOCK_SIZE
 
 
-def test_allocate_blocks(fs: FileSystem):
+def test_allocate_blocks(fs: FileLevelFilesystem):
     n = fs.number_free_blocks(0)
 
     assert n == fs.blockfs.LOGICAL_BLOCK_SIZE * 8 - 1
@@ -83,15 +83,15 @@ def test_allocate_blocks(fs: FileSystem):
     assert bitmap == bitmap_comp
 
 
-def test_create_new_file(fs: FileSystem):
-    file_id = fs.create_new_file()
+def test_create_new_file(fs: FileLevelFilesystem):
+    file_id = fs.create_new_file(0)
 
     assert file_id == 1
     assert fs.unpack_file_header(fs.blockfs.read_block(file_id)) == FileHeader(0, b"", 0, 0, [])
 
 
-def test_extend_file_blocks(fs: FileSystem):
-    file_id = fs.create_new_file()
+def test_extend_file_blocks(fs: FileLevelFilesystem):
+    file_id = fs.create_new_file(0)
     assert file_id == 1
 
     norm_headers = [FileContinuationHeader(1 + (i + 1) * fs.FILE_HEADER_INTERVAL,
@@ -144,8 +144,8 @@ def test_extend_file_blocks(fs: FileSystem):
             assert fs.blockfs.read_block(i) is not None
 
 
-def test_truncate_file_blocks(fs: FileSystem):
-    file_id = fs.create_new_file()
+def test_truncate_file_blocks(fs: FileLevelFilesystem):
+    file_id = fs.create_new_file(0)
     assert file_id == 1
 
     norm_headers = [FileContinuationHeader(1 + (i + 1) * fs.FILE_HEADER_INTERVAL,
@@ -221,3 +221,36 @@ def test_truncate_file_blocks(fs: FileSystem):
             assert fs.blockfs.read_block(i) is not None
         else:
             assert fs.blockfs.read_block(i) is None
+
+
+def test_truncate_size(fs: FileLevelFilesystem):
+    file_id = fs.create_new_file(0)
+    assert file_id == 1
+
+    writer = fs.writer(file_id)
+    writer.write(b"abcdef" * 2 ** 12, flush=True)
+
+    assert fs.num_file_blocks(file_id) == 7
+
+    fs.truncate_file_size(file_id, 6 * 2 ** 11)
+
+    assert fs.num_file_blocks(file_id) == 4
+    assert fs.get_file_header(file_id, 0)[1].size == 6 * 2 ** 11
+    assert fs.reader(file_id).read() == b"abcdef" * 2 ** 11
+
+
+def test_offsets(fs: FileLevelFilesystem):
+    block = offset = counter = 0
+    for _ in range(5000):
+        if offset >= fs.file_data_in_block(block):
+            offset = offset - fs.file_data_in_block(block)
+            block += 1
+
+        assert fs.block_from_offset(counter) == (block, offset), counter
+        offset += 255
+        counter += 255
+
+    assert fs.block_from_offset(0) == (0, 0)
+    assert (fs.block_from_offset(fs.FILE_HEADER_DATA_SIZE - 1) ==
+            (0, fs.blockfs.LOGICAL_BLOCK_SIZE - 1 - fs.FILE_HEADER_SIZE))
+    assert fs.block_from_offset(fs.FILE_HEADER_DATA_SIZE) == (1, 0)
