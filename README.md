@@ -11,10 +11,20 @@ This code is in active development and will break / change API without blinking.
 Requirements
 ============
 
- - [Python 3.6](https://www.python.org/)
- - [cryptography](https://pypi.python.org/pypi/cryptography/1.7.1)
- - [fusepy](https://pypi.python.org/pypi/fusepy/2.0.4)
- - [msgpack](https://pypi.python.org/pypi/msgpack-python)
+ - [Python 3.5+](https://www.python.org/) or [PyPy 3.5-v5.7.1+](http://pypy.org/)
+ - [bitarray](https://pypi.python.org/pypi/bitarray) (pypy requires that patch found [here](https://github.com/ilanschnell/bitarray/pull/47))
+ - [bcrypt](https://pypi.python.org/pypi/bcrypt)
+ - [cryptography](https://pypi.python.org/pypi/cryptography)
+ - [docopt](https://pypi.python.org/pypi/docopt)
+ - [fusepy](https://pypi.python.org/pypi/fusepy)
+ - [namedlist](https://pypi.python.org/pypi/namedlist)
+ - [pylru](https://pypi.python.org/pypi/pylru)
+
+Optional:
+
+ - [coverage](https://pypi.python.org/pypi/coverage)
+ - [iridescence](https://github.com/matsjoyce/iridescence)
+ - [pytest](https://pypi.python.org/pypi/pytest)
 
 
 Filesystem structure
@@ -94,34 +104,3 @@ Maximums
 
  - Maximum file system size is 2**76 bytes (4 ZiB)
  - Maximum file size is 2**64 bytes (16 EiB)
-
-
-For reference
-=============
-
- - With -O
-
-V1 stats:
-
-```
-Writing 225.0 MiB
-Complete 5.214540004730225 seconds 43.14858066021116 MiB/sec
-Reading 225.0 MiB
-Complete 3.341447114944458 seconds 67.3360948894563 MiB/sec
-Writing chunk test
-Complete 2.2614645957946777 seconds 3.9797218213081966 MiB/sec
-Reading chunk test
-Complete 0.27364468574523926 seconds 32.88936518350266 MiB/sec
-```
-
-V2 stats:
-```
-Writing 360.0 MiB
-Complete in 7.5445098876953125 seconds 47.71681730938421 MiB/sec
-Reading 360.0 MiB
-Complete 5.980628728866577 seconds 60.19434014728175 MiB/sec
-Writing chunk test
-Complete 4.950728178024292 seconds 27.26871586269861 MiB/sec
-Reading chunk test
-Complete 3.2899115085601807 seconds 41.03453836029843 MiB/sec
-```

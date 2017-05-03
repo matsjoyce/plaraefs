@@ -183,22 +183,28 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
         return 0
 
     def rmdir(self, path):
-        raise fuse.FuseOSError(fuse.ENOSYS)
+        path = pathlib.PurePosixPath(path)
+        file_id = self.lookup_and_check(path, write=True)
+        parent = self.lookup_and_check(path.parent, write=True)
+        self.pathfs.remove_directory_entry(parent, path.name.encode())
+        self.filefs.delete_file(file_id)
 
     def setxattr(self, path, name, value, options, position=0):
         raise fuse.FuseOSError(fuse.ENOSYS)
 
     def statfs(self, path):
-        return {#"f_bavail",
-                #"f_bfree",
-                "f_blocks": self.blockfs.total_blocks(),
-                "f_bsize": self.blockfs.PHYSICAL_BLOCK_SIZE,
-                #"f_favail",
-                #"f_ffree",
-                #"f_files",
+        file_id = self.lookup_and_check(path)
+        basefs_stat = os.statvfs(str(self.fname))
+        return {"f_bavail": basefs_stat.f_bavail * basefs_stat.f_bsize // self.blockfs.PHYSICAL_BLOCK_SIZE,
+                "f_bfree": basefs_stat.f_bavail * basefs_stat.f_bsize // self.blockfs.PHYSICAL_BLOCK_SIZE,
+                "f_blocks": self.blockfs.total_blocks() + 10,
+                "f_bsize": self.blockfs.LOGICAL_BLOCK_SIZE,
+                #"f_favail": 1,
+                #"f_ffree": 1,
+                #"f_files": 1,
                 "f_flag": ST_NOATIME | ST_NODEV | ST_NODIRATIME | ST_NOEXEC | ST_NOSUID | ST_SYNCHRONOUS,
-                "f_frsize": self.blockfs.PHYSICAL_BLOCK_SIZE,
-                #"f_namemax": self.pathfs.FILENAME_SIZE
+                "f_frsize": self.blockfs.LOGICAL_BLOCK_SIZE,
+                "f_namemax": self.pathfs.FILENAME_SIZE
                 }
 
     def symlink(self, target, source):
@@ -209,7 +215,11 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
         self.filefs.truncate_file_size(file_id, length)
 
     def unlink(self, path):
-        raise fuse.FuseOSError(fuse.ENOSYS)
+        path = pathlib.PurePosixPath(path)
+        file_id = self.lookup_and_check(path, write=True)
+        parent = self.lookup_and_check(path.parent, write=True)
+        self.pathfs.remove_directory_entry(parent, path.name.encode())
+        self.filefs.delete_file(file_id)
 
     def utimens(self, path, times=None):
         raise fuse.FuseOSError(fuse.ENOSYS)

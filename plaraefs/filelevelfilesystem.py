@@ -217,8 +217,9 @@ class FileLevelFilesystem:
             next_block = hdata.next_header
             free_header = last_header + 1
             while next_block:
-                block_id, data = self.get_file_header(file_id, free_header)
-                blocks_to_free.append(block_id)
+                data = self.blockfs.read_block(next_block)
+                data = self.unpack_file_continuation_header(data)
+                blocks_to_free.append(next_block)
                 blocks_to_free.extend(data.block_ids)
                 next_block = data.next_header
                 free_header += 1
@@ -229,6 +230,26 @@ class FileLevelFilesystem:
             self.write_file_header(file_id, last_header, hdata)
             self.deallocate_blocks(blocks_to_free)
 
+    @check_types
+    def delete_file(self, file_id: int):
+        with self.blockfs.lock_file(write=True):
+            header_block_id, hdata = self.get_file_header(file_id, 0)
+            blocks_to_free = hdata.block_ids
+            blocks_to_free.append(header_block_id)
+
+            next_block = hdata.next_header
+            free_header = 1
+            while next_block:
+                data = self.blockfs.read_block(next_block)
+                data = self.unpack_file_continuation_header(data)
+                blocks_to_free.append(next_block)
+                blocks_to_free.extend(data.block_ids)
+                next_block = data.next_header
+                free_header += 1
+
+            self.deallocate_blocks(blocks_to_free)
+
+    @check_types
     def truncate_file_size(self, file_id: int, size: int):
         assert size >= 0
         last_block, _ = self.block_from_offset(size)

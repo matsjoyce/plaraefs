@@ -161,6 +161,7 @@ def test_truncate_file_blocks(fs: FileLevelFilesystem):
 
     fs.truncate_file_blocks(file_id, fs.FILE_HEADER_INTERVAL * 5 - 10)
 
+    assert fs.read_superblock(0).count(1) == fs.FILE_HEADER_INTERVAL * 5 - 10 + 1
     assert fs.num_file_blocks(file_id) == fs.FILE_HEADER_INTERVAL * 5 - 10
     for i in range(4):
         assert fs.get_file_header(file_id, i)[1] == norm_headers[i]
@@ -173,6 +174,7 @@ def test_truncate_file_blocks(fs: FileLevelFilesystem):
     # Aim for a header with one block
     fs.truncate_file_blocks(file_id, fs.FILE_HEADER_INTERVAL * 3 + 2)
 
+    assert fs.read_superblock(0).count(1) == fs.FILE_HEADER_INTERVAL * 3 + 2 + 1
     assert fs.num_file_blocks(file_id) == fs.FILE_HEADER_INTERVAL * 3 + 2
     for i in range(3):
         assert fs.get_file_header(file_id, i)[1] == norm_headers[i]
@@ -184,6 +186,7 @@ def test_truncate_file_blocks(fs: FileLevelFilesystem):
     # Aim for a header with no blocks
     fs.truncate_file_blocks(file_id, fs.FILE_HEADER_INTERVAL * 3 + 1)
 
+    assert fs.read_superblock(0).count(1) == fs.FILE_HEADER_INTERVAL * 3 + 1 + 1
     assert fs.num_file_blocks(file_id) == fs.FILE_HEADER_INTERVAL * 3 + 1
     for i in range(3):
         assert fs.get_file_header(file_id, i)[1] == norm_headers[i]
@@ -194,6 +197,7 @@ def test_truncate_file_blocks(fs: FileLevelFilesystem):
     # Aim for a full header
     fs.truncate_file_blocks(file_id, fs.FILE_HEADER_INTERVAL * 3)
 
+    assert fs.read_superblock(0).count(1) == fs.FILE_HEADER_INTERVAL * 3 + 1
     assert fs.num_file_blocks(file_id) == fs.FILE_HEADER_INTERVAL * 3
     for i in range(2):
         assert fs.get_file_header(file_id, i)[1] == norm_headers[i]
@@ -204,6 +208,7 @@ def test_truncate_file_blocks(fs: FileLevelFilesystem):
 
     fs.extend_file_blocks(file_id, fs.FILE_HEADER_INTERVAL * 5)
 
+    assert fs.read_superblock(0).count(1) == fs.FILE_HEADER_INTERVAL * 5 + 1
     assert fs.num_file_blocks(file_id) == fs.FILE_HEADER_INTERVAL * 5
     x = norm_headers[4].next_header
     norm_headers[4].next_header = 0
@@ -213,6 +218,7 @@ def test_truncate_file_blocks(fs: FileLevelFilesystem):
 
     fs.truncate_file_blocks(file_id, 1)
 
+    assert fs.read_superblock(0).count(1) == 2
     assert fs.num_file_blocks(file_id) == 1
     assert fs.unpack_file_header(fs.blockfs.read_block(file_id)) == FileHeader(0, b"", 0, 0, [])
 
@@ -237,6 +243,20 @@ def test_truncate_size(fs: FileLevelFilesystem):
     assert fs.num_file_blocks(file_id) == 4
     assert fs.get_file_header(file_id, 0)[1].size == 6 * 2 ** 11
     assert fs.reader(file_id).read() == b"abcdef" * 2 ** 11
+
+
+def test_delete(fs: FileLevelFilesystem):
+    file_id = fs.create_new_file(0)
+    assert file_id == 1
+
+    fs.extend_file_blocks(file_id, fs.FILE_HEADER_INTERVAL * 5)
+
+    assert fs.read_superblock(0).count(1) == fs.FILE_HEADER_INTERVAL * 5 + 1
+
+    fs.delete_file(file_id)
+
+    assert fs.read_superblock(0).count(1) == 1
+    assert fs.read_superblock(0)[0]
 
 
 def test_offsets(fs: FileLevelFilesystem):
