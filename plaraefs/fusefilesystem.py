@@ -134,7 +134,6 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
         if initialise:
             PathLevelFilesystem.initialise(self.filefs)
         self.pathfs = PathLevelFilesystem(self.filefs)
-        print(self.filefs.FILE_HEADER_DATA_SIZE)
 
     def link(self, target, source):  # XXX: UNSUPPORTED
         raise fuse.FuseOSError(fuse.ENOSYS)

@@ -14,10 +14,15 @@ logger = logging.getLogger(__name__)
 
 def main(args=None):
     import docopt
-    import iridescence
+    try:
+        import iridescence
+    except ImportError:
+        iridescence = None
+
     import sys
 
-    iridescence.quick_setup()
+    if iridescence:
+        iridescence.quick_setup()
 
     args = docopt.docopt(__doc__, argv=sys.argv[1:] if args is None else args)
 

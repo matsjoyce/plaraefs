@@ -435,7 +435,6 @@ class FileLevelFilesystem:
         with self.blockfs.lock_file(write=False):
             _, hdata = self.get_file_header(file_id, 0)
             data = [hdata.xattr_inline]
-            print(data, hdata.xattr_block)
             next_block = hdata.xattr_block
             while next_block:
                 raw_data = self.blockfs.read_block(next_block)

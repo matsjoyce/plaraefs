@@ -61,7 +61,6 @@ class PathLevelFilesystem:
         reader = self.filefs.reader(file_id, 0)
         # Binary search
         while True:
-            print(start, end)
             middle = (start + end) // 2
             reader.seek(middle * self.DIRECTORY_ENTRY_SIZE)
             entry = self.unpack_directory_entry(reader.read(self.DIRECTORY_ENTRY_SIZE))
