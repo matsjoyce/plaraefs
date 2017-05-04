@@ -30,17 +30,29 @@ XATTR_REPLACE = 2
 logger = logging.getLogger(__name__)
 
 
-class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
+class FUSEFilesystem(fuse.Operations):
     def __init__(self, fname):
         self.fname = pathlib.Path(fname)
         self.salt = None
         self.password = getpass.getpass().encode()
         self.key = None
 
+    def __call__(self, op, *args):
+        logger.debug(f"-> {op} {repr(args)}")
+        try:
+            ret = getattr(self, op)(*args)
+            logger.debug(f"<- {op} {repr(ret)}")
+            return ret
+        except OSError as e:
+            logger.debug(f"<- {op} {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"<- {op} [Unhandled exception]", exc_info=True)
+            raise fuse.FuseOSError(fuse.EACCES) from e
+
     def allow(self, fh, pid, write):
         _, header = self.filefs.get_file_header(fh, 0)
-        logger.debug("Access permission for {}, process {}, write {}", fh,
-                     os.readlink("/proc/{}/exe".format(pid)), write)
+        logger.debug(f"Access permission for {fh}, process {os.readlink('/proc/{}/exe'.format(pid))}, write {write}")
 
     def lookup_and_check(self, path=None, fh=None, write=False):
         gid, uid, pid = fuse.fuse_get_context()
@@ -59,7 +71,6 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
 
     def access(self, path, amode):
         self.lookup_and_check(path, write=amode & os.W_OK)
-        return 0
 
     def chmod(self, path, mode):  # XXX: UNSUPPORTED
         raise fuse.FuseOSError(fuse.ENOSYS)
@@ -78,13 +89,13 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
         self.blockfs.close()
 
     def flush(self, path, fh):
-        return 0
+        pass
 
     def fsync(self, path, datasync, fh):
-        return 0
+        pass
 
     def fsyncdir(self, path, datasync, fh):
-        return 0
+        pass
 
     def getattr(self, path, fh=None):
         fh = self.lookup_and_check(path, fh)
@@ -147,7 +158,6 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
         parent = self.lookup_and_check(path.parent, write=True)
         file_id = self.filefs.create_new_file(FileType.dir.value)
         self.pathfs.add_directory_entry(parent, DirectoryEntry(path.name.encode(), file_id))
-        return 0
 
     def mknod(self, path, mode, dev):  # XXX: UNSUPPORTED
         raise fuse.FuseOSError(fuse.ENOSYS)
@@ -176,10 +186,10 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
         raise fuse.FuseOSError(fuse.ENOSYS)
 
     def release(self, path, fh):
-        return 0
+        pass
 
     def releasedir(self, path, fh):
-        return 0
+        pass
 
     def removexattr(self, path, name):
         file_id = self.lookup_and_check(path, write=True)
@@ -196,11 +206,14 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
         new_parent = self.lookup_and_check(new.parent, write=True)
         self.pathfs.add_directory_entry(new_parent, DirectoryEntry(new.name.encode(), file_id))
         self.pathfs.remove_directory_entry(old_parent, old.name.encode())
-        return 0
 
     def rmdir(self, path):
         path = pathlib.PurePosixPath(path)
         file_id = self.lookup_and_check(path, write=True)
+        if self.filefs.get_file_header(file_id, 0)[1].file_type != FileType.dir.value:
+            raise fuse.FuseOSError(fuse.ENOTDIR)
+        if self.pathfs.directory_entries(file_id):
+            raise fuse.FuseOSError(fuse.ENOTEMPTY)
         parent = self.lookup_and_check(path.parent, write=True)
         self.pathfs.remove_directory_entry(parent, path.name.encode())
         self.filefs.delete_file(file_id)
@@ -215,8 +228,6 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
             raise fuse.FuseOSError(fuse.EEXIST)
         except KeyDoesNotExist:
             raise fuse.FuseOSError(fuse.ENODATA)
-        else:
-            return 0
 
     def statfs(self, path):
         self.lookup_and_check(path)
@@ -230,8 +241,7 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
                 # "f_files": 1,
                 "f_flag": ST_NOATIME | ST_NODEV | ST_NODIRATIME | ST_NOEXEC | ST_NOSUID | ST_SYNCHRONOUS,
                 "f_frsize": self.blockfs.LOGICAL_BLOCK_SIZE,
-                "f_namemax": self.pathfs.FILENAME_SIZE
-                }
+                "f_namemax": self.pathfs.FILENAME_SIZE}
 
     def symlink(self, target, source):  # XXX: UNSUPPORTED
         raise fuse.FuseOSError(fuse.ENOSYS)
@@ -243,6 +253,8 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
     def unlink(self, path):
         path = pathlib.PurePosixPath(path)
         file_id = self.lookup_and_check(path, write=True)
+        if self.filefs.get_file_header(file_id, 0)[1].file_type != FileType.file.value:
+            raise fuse.FuseOSError(fuse.EISDIR)
         parent = self.lookup_and_check(path.parent, write=True)
         self.pathfs.remove_directory_entry(parent, path.name.encode())
         self.filefs.delete_file(file_id)

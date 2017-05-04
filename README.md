@@ -22,7 +22,7 @@ This code is in active development and will break / change API without blinking.
 Requirements
 ------------
 
- - [Python 3.5+](https://www.python.org/) or [PyPy 3.5-v5.7.1+](http://pypy.org/)
+ - [Python 3.6+](https://www.python.org/) or [PyPy 3.5-v5.7.1+](http://pypy.org/)
  - [bitarray](https://pypi.python.org/pypi/bitarray) (PyPy requires that patch found [here](https://github.com/ilanschnell/bitarray/pull/47))
  - [bcrypt](https://pypi.python.org/pypi/bcrypt)
  - [cryptography](https://pypi.python.org/pypi/cryptography)
