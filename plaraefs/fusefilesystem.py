@@ -8,7 +8,7 @@ import bcrypt
 import hashlib
 
 from .blocklevelfilesystem import BlockLevelFilesystem
-from .filelevelfilesystem import FileLevelFilesystem
+from .filelevelfilesystem import FileLevelFilesystem, KeyAlreadyExists, KeyDoesNotExist
 from .pathlevelfilesystem import PathLevelFilesystem, FileType, DirectoryEntry
 
 ST_RDONLY = 1
@@ -23,6 +23,9 @@ ST_NOATIME = 1024
 ST_NODIRATIME = 2048
 ST_RELATIME = 4096
 
+XATTR_CREATE = 1
+XATTR_REPLACE = 2
+
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +39,15 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
 
     def allow(self, fh, pid, write):
         _, header = self.filefs.get_file_header(fh, 0)
-        logger.debug("Access permission for {}, process {}, write {}, tag {}", fh, os.readlink("/proc/{}/exe".format(pid)), write, header.group_tag)
+        logger.debug("Access permission for {}, process {}, write {}", fh,
+                     os.readlink("/proc/{}/exe".format(pid)), write)
 
     def lookup_and_check(self, path=None, fh=None, write=False):
         gid, uid, pid = fuse.fuse_get_context()
-        allow = lambda f: self.allow(f, pid, write)
+
+        def allow(f):
+            self.allow(f, pid, write)
+
         if fh:
             allow(fh)
             return fh
@@ -54,10 +61,10 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
         self.lookup_and_check(path, write=amode & os.W_OK)
         return 0
 
-    def chmod(self, path, mode):
+    def chmod(self, path, mode):  # XXX: UNSUPPORTED
         raise fuse.FuseOSError(fuse.ENOSYS)
 
-    def chown(self, path, uid, gid):
+    def chown(self, path, uid, gid):  # XXX: UNSUPPORTED
         raise fuse.FuseOSError(fuse.ENOSYS)
 
     def create(self, path, mode):
@@ -96,13 +103,17 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
                 "st_size": header.size,
                 "st_uid": 0}
 
-    def getxattr(self, path, name, position=0):
-        raise fuse.FuseOSError(fuse.ENOTSUP)
+    def getxattr(self, path, name):
+        file_id = self.lookup_and_check(path)
+        try:
+            return self.filefs.lookup_xattr(file_id, name.encode())
+        except KeyError:
+            raise fuse.FuseOSError(fuse.ENODATA)
 
     def init(self, path):
         initialise = not self.fname.exists()
         if initialise:
-            self.salt = bcrypt.gensalt(16)
+            self.salt = bcrypt.gensalt(15)
         elif self.salt is None:
             with self.fname.open("rb") as f:
                 self.salt = f.read(32).rstrip(b"\0")
@@ -123,12 +134,14 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
         if initialise:
             PathLevelFilesystem.initialise(self.filefs)
         self.pathfs = PathLevelFilesystem(self.filefs)
+        print(self.filefs.FILE_HEADER_DATA_SIZE)
 
-    def link(self, target, source):
+    def link(self, target, source):  # XXX: UNSUPPORTED
         raise fuse.FuseOSError(fuse.ENOSYS)
 
     def listxattr(self, path):
-        raise fuse.FuseOSError(fuse.ENOSYS)
+        file_id = self.lookup_and_check(path)
+        return [i.decode() for i in self.filefs.read_xattrs(file_id)]
 
     def mkdir(self, path, mode):
         path = pathlib.PurePosixPath(path)
@@ -137,7 +150,7 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
         self.pathfs.add_directory_entry(parent, DirectoryEntry(path.name.encode(), file_id))
         return 0
 
-    def mknod(self, path, mode, dev):
+    def mknod(self, path, mode, dev):  # XXX: UNSUPPORTED
         raise fuse.FuseOSError(fuse.ENOSYS)
 
     def open(self, path, flags):
@@ -160,7 +173,7 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
         fh = self.lookup_and_check(fh=fh)
         return [".", ".."] + [entry.name.decode() for entry in self.pathfs.directory_entries(fh)]
 
-    def readlink(self, path):
+    def readlink(self, path):  # XXX: UNSUPPORTED
         raise fuse.FuseOSError(fuse.ENOSYS)
 
     def release(self, path, fh):
@@ -170,7 +183,11 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
         return 0
 
     def removexattr(self, path, name):
-        raise fuse.FuseOSError(fuse.ENOSYS)
+        file_id = self.lookup_and_check(path, write=True)
+        try:
+            self.filefs.delete_xattr(file_id, name.encode())
+        except KeyError:
+            raise fuse.FuseOSError(fuse.ENODATA)
 
     def rename(self, old, new):
         old = pathlib.PurePosixPath(old)
@@ -189,25 +206,35 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
         self.pathfs.remove_directory_entry(parent, path.name.encode())
         self.filefs.delete_file(file_id)
 
-    def setxattr(self, path, name, value, options, position=0):
-        raise fuse.FuseOSError(fuse.ENOSYS)
+    def setxattr(self, path, name, value, options):
+        file_id = self.lookup_and_check(path, write=True)
+        try:
+            self.filefs.set_xattr(file_id, name.encode(), value,
+                                  replace_only=bool(options & XATTR_REPLACE),
+                                  create_only=bool(options & XATTR_CREATE))
+        except KeyAlreadyExists:
+            raise fuse.FuseOSError(fuse.EEXIST)
+        except KeyDoesNotExist:
+            raise fuse.FuseOSError(fuse.ENODATA)
+        else:
+            return 0
 
     def statfs(self, path):
-        file_id = self.lookup_and_check(path)
+        self.lookup_and_check(path)
         basefs_stat = os.statvfs(str(self.fname))
         return {"f_bavail": basefs_stat.f_bavail * basefs_stat.f_bsize // self.blockfs.PHYSICAL_BLOCK_SIZE,
                 "f_bfree": basefs_stat.f_bavail * basefs_stat.f_bsize // self.blockfs.PHYSICAL_BLOCK_SIZE,
                 "f_blocks": self.blockfs.total_blocks() + 10,
                 "f_bsize": self.blockfs.LOGICAL_BLOCK_SIZE,
-                #"f_favail": 1,
-                #"f_ffree": 1,
-                #"f_files": 1,
+                # "f_favail": 1,
+                # "f_ffree": 1,
+                # "f_files": 1,
                 "f_flag": ST_NOATIME | ST_NODEV | ST_NODIRATIME | ST_NOEXEC | ST_NOSUID | ST_SYNCHRONOUS,
                 "f_frsize": self.blockfs.LOGICAL_BLOCK_SIZE,
                 "f_namemax": self.pathfs.FILENAME_SIZE
                 }
 
-    def symlink(self, target, source):
+    def symlink(self, target, source):  # XXX: UNSUPPORTED
         raise fuse.FuseOSError(fuse.ENOSYS)
 
     def truncate(self, path, length, fh=None):
@@ -221,7 +248,7 @@ class FUSEFilesystem(fuse.LoggingMixIn, fuse.Operations):
         self.pathfs.remove_directory_entry(parent, path.name.encode())
         self.filefs.delete_file(file_id)
 
-    def utimens(self, path, times=None):
+    def utimens(self, path, times=None):  # XXX: UNSUPPORTED
         raise fuse.FuseOSError(fuse.ENOSYS)
 
     def write(self, path, data, offset, fh):

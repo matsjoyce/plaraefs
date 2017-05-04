@@ -26,7 +26,6 @@ class PathLevelFilesystem:
     @check_types
     def initialise(cls, filefs: FileLevelFilesystem):
         filefs.create_new_file(FileType.dir.value)
-        fs = cls(filefs)
 
     @check_types
     def lookup(self, path: tuple, checker=None):

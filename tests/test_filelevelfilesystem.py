@@ -23,11 +23,12 @@ def fs():
 
 
 def test_file_header(fs: FileLevelFilesystem):
-    header = FileHeader(0, b"stuff", 0, 0, [])
+    header = FileHeader(0, 0, 0, [], 0, b"\0" * fs.XATTR_INLINE_SIZE)
     assert header == fs.unpack_file_header(fs.pack_file_header(header))
 
-    header = FileHeader(1, b"stuff", random.randrange(2 ** 64), random.randrange(2 ** 64),
-                        [random.randrange(2 ** 64) for _ in range(32)])
+    header = FileHeader(1, random.randrange(2 ** 64), random.randrange(2 ** 64),
+                        [random.randrange(2 ** 64) for _ in range(32)], random.randrange(2 ** 64),
+                        b"\0" * fs.XATTR_INLINE_SIZE)
     assert header == fs.unpack_file_header(fs.pack_file_header(header))
 
 
@@ -87,7 +88,8 @@ def test_create_new_file(fs: FileLevelFilesystem):
     file_id = fs.create_new_file(0)
 
     assert file_id == 1
-    assert fs.unpack_file_header(fs.blockfs.read_block(file_id)) == FileHeader(0, b"", 0, 0, [])
+    assert (fs.unpack_file_header(fs.blockfs.read_block(file_id))
+            == FileHeader(0, 0, 0, [], 0, b"\0" * fs.XATTR_INLINE_SIZE))
 
 
 def test_extend_file_blocks(fs: FileLevelFilesystem):
@@ -99,14 +101,15 @@ def test_extend_file_blocks(fs: FileLevelFilesystem):
                                            list(range(i * fs.FILE_HEADER_INTERVAL + 2,
                                                       i * fs.FILE_HEADER_INTERVAL + fs.BLOCK_IDS_PER_HEADER + 2)))
                     for i in range(1, 10)]
-    norm_headers.insert(0, FileHeader(0, b"", 0,
+    norm_headers.insert(0, FileHeader(0, 0,
                                       1 + fs.FILE_HEADER_INTERVAL,
-                                      list(range(2, 2 + fs.BLOCK_IDS_PER_HEADER))))
+                                      list(range(2, 2 + fs.BLOCK_IDS_PER_HEADER)),
+                                      0, b"\0" * fs.XATTR_INLINE_SIZE))
 
     fs.extend_file_blocks(file_id, 10)
 
     assert fs.num_file_blocks(file_id) == 10
-    assert fs.get_file_header(file_id, 0)[1] == FileHeader(0, b"", 0, 0, list(range(2, 11)))
+    assert fs.get_file_header(file_id, 0)[1] == FileHeader(0, 0, 0, list(range(2, 11)), 0, b"\0" * fs.XATTR_INLINE_SIZE)
 
     # Aim for a header with no blocks
     fs.extend_file_blocks(file_id, fs.FILE_HEADER_INTERVAL * 3 + 1)
@@ -153,9 +156,10 @@ def test_truncate_file_blocks(fs: FileLevelFilesystem):
                                            list(range(i * fs.FILE_HEADER_INTERVAL + 2,
                                                       i * fs.FILE_HEADER_INTERVAL + fs.BLOCK_IDS_PER_HEADER + 2)))
                     for i in range(1, 10)]
-    norm_headers.insert(0, FileHeader(0, b"", 0,
+    norm_headers.insert(0, FileHeader(0, 0,
                                       1 + fs.FILE_HEADER_INTERVAL,
-                                      list(range(2, 2 + fs.BLOCK_IDS_PER_HEADER))))
+                                      list(range(2, 2 + fs.BLOCK_IDS_PER_HEADER)),
+                                      0, b"\0" * fs.XATTR_INLINE_SIZE))
 
     fs.extend_file_blocks(file_id, fs.FILE_HEADER_INTERVAL * 5)
 
@@ -220,7 +224,8 @@ def test_truncate_file_blocks(fs: FileLevelFilesystem):
 
     assert fs.read_superblock(0).count(1) == 2
     assert fs.num_file_blocks(file_id) == 1
-    assert fs.unpack_file_header(fs.blockfs.read_block(file_id)) == FileHeader(0, b"", 0, 0, [])
+    assert (fs.unpack_file_header(fs.blockfs.read_block(file_id))
+            == FileHeader(0, 0, 0, [], 0, b"\0" * fs.XATTR_INLINE_SIZE))
 
     for i in range(file_id, fs.blockfs.total_blocks()):
         if i == file_id:
@@ -274,3 +279,55 @@ def test_offsets(fs: FileLevelFilesystem):
     assert (fs.block_from_offset(fs.FILE_HEADER_DATA_SIZE - 1) ==
             (0, fs.blockfs.LOGICAL_BLOCK_SIZE - 1 - fs.FILE_HEADER_SIZE))
     assert fs.block_from_offset(fs.FILE_HEADER_DATA_SIZE) == (1, 0)
+
+
+def test_xattr_write_small(fs: FileLevelFilesystem):
+    file_id = fs.create_new_file(0)
+    assert file_id == 1
+
+    fs.set_xattr(file_id, b"user.test", b"test")
+    fs.header_cache.clear()
+
+    assert fs.get_file_header(file_id, 0)[1].xattr_inline == b"user.test\0test".ljust(fs.XATTR_INLINE_SIZE, b"\0")
+    assert fs.read_xattrs(file_id) == {b"user.test": b"test"}
+    assert fs.lookup_xattr(file_id, b"user.test") == b"test"
+
+
+def test_xattr_write_large(fs: FileLevelFilesystem):
+    file_id = fs.create_new_file(0)
+    assert file_id == 1
+
+    xattrs = {
+        b"a": b"aaa",
+        b"b": b"",
+        b"c": b"c" * 5000,
+        b"c2": b"c" * 5000
+    }
+
+    fs.write_xattrs(file_id, xattrs)
+    fs.header_cache.clear()
+
+    assert fs.lookup_xattr(file_id, b"a") == b"aaa"
+    assert fs.lookup_xattr(file_id, b"b") == b""
+    assert len(fs.lookup_xattr(file_id, b"c")) == 5000
+    assert len(fs.lookup_xattr(file_id, b"c2")) == 5000
+    assert fs.read_xattrs(file_id) == xattrs
+
+    fs.set_xattr(file_id, b"user.test", b"test")
+    xattrs[b"user.test"] = b"test"
+
+    assert fs.lookup_xattr(file_id, b"user.test") == b"test"
+    assert fs.read_xattrs(file_id) == xattrs
+
+    fs.delete_xattr(file_id, b"user.test")
+    del xattrs[b"user.test"]
+
+    assert fs.read_xattrs(file_id) == xattrs
+    with pytest.raises(KeyError):
+        fs.lookup_xattr(file_id, b"user.test")
+
+    for k in xattrs:
+        fs.delete_xattr(file_id, k)
+
+    assert fs.read_xattrs(file_id) == {}
+    assert fs.read_superblock(0).count(1) == 2

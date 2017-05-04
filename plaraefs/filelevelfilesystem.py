@@ -10,7 +10,8 @@ from .write_iterator import WriteIterator
 from .utils import check_types
 
 
-FileHeader = namedlist.namedlist("FileHeader", ("file_type", "group_tag", "size", "next_header", "block_ids"))
+FileHeader = namedlist.namedlist("FileHeader", ("file_type", "size", "next_header",
+                                                "block_ids", "xattr_block", "xattr_inline"))
 FileContinuationHeader = namedlist.namedlist("FileContinuationHeader", ("next_header", "prev_header", "block_ids"))
 HeaderCache = namedlist.namedlist("HeaderCache", ("block_id", "hdata", "token"))
 
@@ -18,25 +19,37 @@ singleton_0_bitarray = bitarray.bitarray("0")
 singleton_1_bitarray = bitarray.bitarray("1")
 
 
+class KeyAlreadyExists(KeyError):
+    pass
+
+
+class KeyDoesNotExist(KeyError):
+    pass
+
+
 class FileLevelFilesystem:
-    GROUP_TAG_SIZE = 16
     FILESIZE_SIZE = 8
     BLOCK_IDS_PER_HEADER = 32
     FILE_HEADER_INTERVAL = BLOCK_IDS_PER_HEADER + 1
+    XATTR_INLINE_SIZE = 256
 
     def __init__(self, blockfs: BlockLevelFilesystem):
         self.blockfs = blockfs
         self.header_cache = pylru.lrucache(1024)
 
-        self.FILE_HEADER_SIZE = (1 + self.GROUP_TAG_SIZE + self.FILESIZE_SIZE +
-                                 (self.BLOCK_IDS_PER_HEADER + 1) * self.blockfs.BLOCK_ID_SIZE)
+        self.FILE_HEADER_SIZE = (1 + self.FILESIZE_SIZE +
+                                 (self.BLOCK_IDS_PER_HEADER + 2) * self.blockfs.BLOCK_ID_SIZE +
+                                 self.XATTR_INLINE_SIZE)
         self.FILE_HEADER_DATA_SIZE = self.blockfs.LOGICAL_BLOCK_SIZE - self.FILE_HEADER_SIZE
         self.FILE_CONTINUATION_HEADER_SIZE = (self.BLOCK_IDS_PER_HEADER + 2) * self.blockfs.BLOCK_ID_SIZE
         self.FILE_CONTINUATION_HEADER_DATA_SIZE = self.blockfs.LOGICAL_BLOCK_SIZE - self.FILE_CONTINUATION_HEADER_SIZE
         self.SUPERBLOCK_INTERVAL = self.blockfs.LOGICAL_BLOCK_SIZE * 8
+        self.XATTR_BLOCK_HEADER_SIZE = self.blockfs.BLOCK_ID_SIZE
+        self.XATTR_BLOCK_DATA_SIZE = self.blockfs.LOGICAL_BLOCK_SIZE - self.XATTR_BLOCK_HEADER_SIZE
 
-        self.file_header_struct = struct.Struct(f"<B{self.GROUP_TAG_SIZE}s{self.BLOCK_IDS_PER_HEADER + 2}Q")
+        self.file_header_struct = struct.Struct(f"<B{self.BLOCK_IDS_PER_HEADER + 3}Q{self.XATTR_INLINE_SIZE}s")
         self.file_continuation_header_struct = struct.Struct(f"<{self.BLOCK_IDS_PER_HEADER + 2}Q")
+        self.xattr_block_header_struct = struct.Struct(f"<Q{self.XATTR_BLOCK_DATA_SIZE}s")
 
     @classmethod
     @check_types
@@ -48,19 +61,21 @@ class FileLevelFilesystem:
 
     @check_types
     def unpack_file_header(self, data: bytes):
-        file_type, group_tag, size, next_header, *block_ids = self.file_header_struct.unpack(data[:self.FILE_HEADER_SIZE])
+        (file_type, size, next_header, *block_ids,
+         xattr_block, xattr_inline) = self.file_header_struct.unpack(data[:self.FILE_HEADER_SIZE])
         if not block_ids[-1]:
             block_ids = block_ids[:block_ids.index(0)]
-        return FileHeader(file_type, group_tag.rstrip(b"\0"), size, next_header, block_ids)
+        return FileHeader(file_type, size, next_header, block_ids, xattr_block, xattr_inline)
 
     @check_types
     def pack_file_header(self, header: FileHeader):
         return self.file_header_struct.pack(header.file_type,
-                                            header.group_tag,
                                             header.size,
                                             header.next_header,
                                             *header.block_ids,
-                                            *([0] * (self.BLOCK_IDS_PER_HEADER - len(header.block_ids))))
+                                            *([0] * (self.BLOCK_IDS_PER_HEADER - len(header.block_ids))),
+                                            header.xattr_block,
+                                            header.xattr_inline)
 
     @check_types
     def unpack_file_continuation_header(self, data: bytes):
@@ -319,7 +334,7 @@ class FileLevelFilesystem:
     def create_new_file(self, file_type):
         with self.blockfs.lock_file(write=True):
             block_id, = self.allocate_blocks(1)
-            header = FileHeader(file_type, b"", 0, 0, [])
+            header = FileHeader(file_type, 0, 0, [], 0, b"")
             self.blockfs.write_block(block_id, 0, self.pack_file_header(header))
         return block_id
 
@@ -373,3 +388,81 @@ class FileLevelFilesystem:
     @check_types
     def writer(self, file_id: int, start: int=0):
         return WriteIterator(self, file_id, start)
+
+    @check_types
+    def pack_xattr_block(self, next_block: int, data: bytes):
+        return self.xattr_block_header_struct.pack(next_block, data)
+
+    @check_types
+    def unpack_xattr_block(self, data: bytes):
+        return self.xattr_block_header_struct.unpack(data)
+
+    @check_types
+    def write_xattrs(self, file_id: int, attrs: dict):
+        data = b"\0".join(b"\0".join(x) for x in attrs.items())
+        initial_data, data = data[:self.XATTR_INLINE_SIZE], data[self.XATTR_INLINE_SIZE:]
+
+        with self.blockfs.lock_file(write=True):
+            _, hdata = self.get_file_header(file_id, 0)
+            hdata.xattr_inline = initial_data
+            next_block = hdata.xattr_block
+            blocks = []
+            while next_block:
+                blocks.append(next_block)
+                raw_data = self.blockfs.read_block(next_block)
+                next_block, _ = self.unpack_xattr_block(raw_data)
+
+            block_data = []
+            blocks_needed = len(data) // self.XATTR_BLOCK_DATA_SIZE + bool(len(data) % self.XATTR_BLOCK_DATA_SIZE)
+            for i in range(blocks_needed):
+                block_data.append(data[i * self.XATTR_BLOCK_DATA_SIZE:(i + 1) * self.XATTR_BLOCK_DATA_SIZE])
+
+            if len(blocks) < blocks_needed:
+                blocks.extend(self.allocate_blocks(len(block_data) - len(blocks)))
+            elif blocks_needed < len(blocks):
+                rm_blocks, blocks = blocks[blocks_needed:], blocks[:blocks_needed]
+                self.deallocate_blocks(rm_blocks)
+
+            for i, (block, data) in enumerate(zip(blocks, block_data)):
+                raw_data = self.pack_xattr_block(0 if i + 1 == len(blocks) else blocks[i + 1], data)
+                self.blockfs.write_block(block, 0, raw_data)
+
+            hdata.xattr_block = blocks[0] if blocks else 0
+            self.write_file_header(file_id, 0, hdata)
+
+    @check_types
+    def read_xattrs(self, file_id: int):
+        with self.blockfs.lock_file(write=False):
+            _, hdata = self.get_file_header(file_id, 0)
+            data = [hdata.xattr_inline]
+            print(data, hdata.xattr_block)
+            next_block = hdata.xattr_block
+            while next_block:
+                raw_data = self.blockfs.read_block(next_block)
+                next_block, data_part = self.unpack_xattr_block(raw_data)
+                data.append(data_part)
+        data = b"".join(data).rstrip(b"\0")
+        if data:
+            iter_items = iter(data.split(b"\0"))
+            return {i: next(iter_items) for i in iter_items}
+        return {}
+
+    @check_types
+    def lookup_xattr(self, file_id: int, key: bytes):
+        return self.read_xattrs(file_id)[key]
+
+    @check_types
+    def set_xattr(self, file_id: int, key: bytes, value: bytes, create_only: bool=False, replace_only: bool=False):
+        data = self.read_xattrs(file_id)
+        if create_only and key in data:
+            raise KeyAlreadyExists()
+        if replace_only and key not in data:
+            raise KeyDoesNotExist()
+        data[key] = value
+        self.write_xattrs(file_id, data)
+
+    @check_types
+    def delete_xattr(self, file_id: int, key: bytes):
+        data = self.read_xattrs(file_id)
+        del data[key]
+        self.write_xattrs(file_id, data)

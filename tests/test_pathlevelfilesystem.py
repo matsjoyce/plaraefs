@@ -6,7 +6,6 @@ from plaraefs.blocklevelfilesystem import BlockLevelFilesystem
 from plaraefs.filelevelfilesystem import FileLevelFilesystem
 from plaraefs.pathlevelfilesystem import PathLevelFilesystem, DirectoryEntry
 from plaraefs.read_iterator import ReadIterator
-from plaraefs.write_iterator import WriteIterator
 
 
 @pytest.fixture()
@@ -43,7 +42,8 @@ def test_directory_lookup_simple(fs: PathLevelFilesystem):
     de2 = DirectoryEntry(b"b", fs.ROOT_FILE_ID + 2)
     fs.add_directory_entry(fs.ROOT_FILE_ID, de2)
 
-    assert ReadIterator(fs.filefs, fs.ROOT_FILE_ID, 0).read() == fs.pack_directory_entry(de) + fs.pack_directory_entry(de2)
+    assert (ReadIterator(fs.filefs, fs.ROOT_FILE_ID, 0).read()
+            == fs.pack_directory_entry(de) + fs.pack_directory_entry(de2))
 
     assert fs.lookup((b"a",)) == fs.ROOT_FILE_ID + 1
     assert fs.lookup((b"b",)) == fs.ROOT_FILE_ID + 2
@@ -91,7 +91,8 @@ def test_directory_remove(fs: PathLevelFilesystem):
     fs.remove_directory_entry(fs.ROOT_FILE_ID, b"b")
 
     assert fs.lookup((b"b",)) is None
-    assert ReadIterator(fs.filefs, fs.ROOT_FILE_ID, 0).read() == fs.pack_directory_entry(de_a) + fs.pack_directory_entry(de_c)
+    assert (ReadIterator(fs.filefs, fs.ROOT_FILE_ID, 0).read()
+            == fs.pack_directory_entry(de_a) + fs.pack_directory_entry(de_c))
 
     with pytest.raises(FileNotFoundError):
         fs.remove_directory_entry(fs.ROOT_FILE_ID, b"b")

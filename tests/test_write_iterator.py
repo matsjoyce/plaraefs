@@ -1,9 +1,9 @@
-from test_filelevelfilesystem import fs
+from test_filelevelfilesystem import fs  # noqa E401
 from plaraefs.write_iterator import WriteIterator
 from plaraefs.filelevelfilesystem import FileLevelFilesystem, FileHeader
 
 
-def test_take_unflushed(fs: FileLevelFilesystem):
+def test_take_unflushed(fs: FileLevelFilesystem):  # noqa E811
     wi = WriteIterator(fs, 0, 0)
     wi.add_unflushed(b"abc")
     wi.add_unflushed(b"def")
@@ -39,7 +39,7 @@ def test_take_unflushed(fs: FileLevelFilesystem):
     assert wi.unflushed_data_first_item_start == 0
 
 
-def test_small_single_write(fs: FileLevelFilesystem):
+def test_small_single_write(fs: FileLevelFilesystem):  # noqa E811
     file_id = fs.create_new_file(0)
 
     data_before, token = fs.blockfs.read_block(file_id, with_token=True)
@@ -50,7 +50,7 @@ def test_small_single_write(fs: FileLevelFilesystem):
     wi.write(b"abcdef" * 10, flush=True)
 
     data_after, token2 = fs.blockfs.read_block(file_id, with_token=True)
-    header = fs.pack_file_header(FileHeader(0, b"", len(b"abcdef" * 10), 0, []))
+    header = fs.pack_file_header(FileHeader(0, len(b"abcdef" * 10), 0, [], 0, b""))
 
     assert token != token2
     assert data_after.index(b"a") == fs.FILE_HEADER_SIZE
@@ -59,7 +59,7 @@ def test_small_single_write(fs: FileLevelFilesystem):
     assert fs.blockfs.block_writes == writes_before + 1
 
 
-def test_small_single_overwrite(fs: FileLevelFilesystem):
+def test_small_single_overwrite(fs: FileLevelFilesystem):  # noqa E811
     file_id = fs.create_new_file(0)
 
     data_before, token = fs.blockfs.read_block(file_id, with_token=True)
@@ -71,7 +71,7 @@ def test_small_single_overwrite(fs: FileLevelFilesystem):
     wi.write(b"123456" * 5, flush=True)
 
     data_after, token2 = fs.blockfs.read_block(file_id, with_token=True)
-    header = fs.pack_file_header(FileHeader(0, b"", len(b"abcdef" * 10), 0, []))
+    header = fs.pack_file_header(FileHeader(0, len(b"abcdef" * 10), 0, [], 0, b""))
 
     assert token != token2
     assert data_after.index(b"1") == fs.FILE_HEADER_SIZE
@@ -79,7 +79,7 @@ def test_small_single_overwrite(fs: FileLevelFilesystem):
     assert header + b"123456" * 5 + b"abcdef" * 5 + data_before[fs.FILE_HEADER_SIZE + 60:] == data_after
 
 
-def test_small_multi_write(fs: FileLevelFilesystem):
+def test_small_multi_write(fs: FileLevelFilesystem):  # noqa E811
     file_id = fs.create_new_file(0)
 
     data_before, token = fs.blockfs.read_block(file_id, with_token=True)
@@ -93,7 +93,7 @@ def test_small_multi_write(fs: FileLevelFilesystem):
     wi.write(None, flush=True)
 
     data_after, token2 = fs.blockfs.read_block(file_id, with_token=True)
-    header = fs.pack_file_header(FileHeader(0, b"", len(b"abcdef" * 10), 0, []))
+    header = fs.pack_file_header(FileHeader(0, len(b"abcdef" * 10), 0, [], 0, b""))
 
     assert token != token2
     assert data_after[fs.FILE_HEADER_SIZE:fs.FILE_HEADER_SIZE + 60] == b"abcdef" * 10
@@ -101,7 +101,7 @@ def test_small_multi_write(fs: FileLevelFilesystem):
     assert fs.blockfs.block_writes == writes_before + 2
 
 
-def test_large_single_write(fs: FileLevelFilesystem):
+def test_large_single_write(fs: FileLevelFilesystem):  # noqa E811
     file_id = fs.create_new_file(0)
 
     data_before, token = fs.blockfs.read_block(file_id, with_token=True)
@@ -130,7 +130,7 @@ def test_large_single_write(fs: FileLevelFilesystem):
         data_pos += len(bdata)
 
 
-def test_large_multi_write(fs: FileLevelFilesystem):
+def test_large_multi_write(fs: FileLevelFilesystem):  # noqa E811
     file_id = fs.create_new_file(0)
 
     data_before, token = fs.blockfs.read_block(file_id, with_token=True)
@@ -161,7 +161,7 @@ def test_large_multi_write(fs: FileLevelFilesystem):
         data_pos += len(bdata)
 
 
-def test_seek(fs: FileLevelFilesystem):
+def test_seek(fs: FileLevelFilesystem):  # noqa E811
     file_id = fs.create_new_file(0)
 
     data_before, token = fs.blockfs.read_block(file_id, with_token=True)
@@ -173,7 +173,7 @@ def test_seek(fs: FileLevelFilesystem):
     wi.write(b"123456" * 5, flush=True)
 
     data_after, token2 = fs.blockfs.read_block(file_id, with_token=True)
-    header = fs.pack_file_header(FileHeader(0, b"", len(b"abcdef" * 10), 0, []))
+    header = fs.pack_file_header(FileHeader(0, len(b"abcdef" * 10), 0, [], 0, b""))
 
     assert token != token2
     assert data_after.index(b"1") == fs.FILE_HEADER_SIZE
