@@ -334,13 +334,10 @@ class FileLevelFilesystem:
                 block_id = file_id
                 hdata = self.read_file_header(file_id, start, block_id)
 
-            print(header_num, start, hdata, self.read_file_header(file_id, start, block_id))
-
             while start < header_num:
                 block_id = hdata.next_header
                 assert hdata.next_header
                 start += 1
-                print(start)
                 hdata = self.read_file_header(file_id, start, block_id)
 
             while start > header_num:

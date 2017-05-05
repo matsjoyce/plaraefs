@@ -6,5 +6,5 @@ setup(name="plaraefs",
       version="0.1",
       author="Matthew Joyce",
       author_email="matsjoyce@gmail.com",
-      packages=["plaraefs"],
+      packages=["plaraefs", "plaraefs.accesscontroller"],
       entry_points={"console_scripts": ["plaraefs = plaraefs:main"]})
