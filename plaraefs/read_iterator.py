@@ -5,6 +5,7 @@ class ReadIterator(FileIterator):
     def read_chunks(self, size):
         with self.fs.blockfs.lock_file(write=False):
             total_file_size = self.fs.get_file_header(self.file_id, 0)[1].size
+            self.start = min(self.start, total_file_size)
             if size is None:
                 size = total_file_size - self.start
             else:

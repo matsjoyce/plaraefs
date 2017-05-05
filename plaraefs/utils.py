@@ -1,5 +1,6 @@
 import inspect
 import functools
+import collections
 
 
 def check_types(func):
@@ -18,3 +19,22 @@ def check_types(func):
             return func(*args, **kwargs)
         return ct_wrapper
     return func
+
+
+class LRUDict(collections.OrderedDict):
+    def __init__(self, maxsize):
+        super().__init__()
+        self.maxsize = maxsize
+
+    def __getitem__(self, key):
+        try:
+            self.move_to_end(key)
+        except KeyError:
+            pass
+        return super().__getitem__(key)
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        if len(self) > self.maxsize:
+            self.popitem(last=False)

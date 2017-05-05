@@ -1,19 +1,19 @@
 import bitarray
 import namedlist
 import itertools
-import pylru
 import struct
 
 from .blocklevelfilesystem import BlockLevelFilesystem
 from .read_iterator import ReadIterator
 from .write_iterator import WriteIterator
-from .utils import check_types
+from .utils import check_types, LRUDict
 
 
 FileHeader = namedlist.namedlist("FileHeader", ("file_type", "size", "next_header",
                                                 "block_ids", "xattr_block", "xattr_inline"))
 FileContinuationHeader = namedlist.namedlist("FileContinuationHeader", ("next_header", "prev_header", "block_ids"))
 HeaderCache = namedlist.namedlist("HeaderCache", ("block_id", "hdata", "token"))
+SuperblockCache = namedlist.namedlist("SuperblockCache", ("data", "token"))
 
 singleton_0_bitarray = bitarray.bitarray("0")
 singleton_1_bitarray = bitarray.bitarray("1")
@@ -35,7 +35,8 @@ class FileLevelFilesystem:
 
     def __init__(self, blockfs: BlockLevelFilesystem):
         self.blockfs = blockfs
-        self.header_cache = pylru.lrucache(1024)
+        self.header_cache = LRUDict(1024)
+        self.superblock_cache = LRUDict(128)
 
         self.FILE_HEADER_SIZE = (1 + self.FILESIZE_SIZE +
                                  (self.BLOCK_IDS_PER_HEADER + 2) * self.blockfs.BLOCK_ID_SIZE +
@@ -96,14 +97,29 @@ class FileLevelFilesystem:
     @check_types
     def read_superblock(self, superblock_id: int):
         block_id = superblock_id * self.SUPERBLOCK_INTERVAL
+        try:
+            hcache = self.superblock_cache[superblock_id]
+            reload, _ = self.blockfs.block_version(block_id, hcache.token)
+            if not reload:
+                return hcache.data
+        except KeyError:
+            pass
+
+        if block_id >= self.blockfs.total_blocks():
+            new_block_id, = self.blockfs.new_blocks(1)
+            assert new_block_id == block_id, (new_block_id, block_id)
+            self.write_new_superblock(superblock_id)
         arr = bitarray.bitarray()
-        arr.frombytes(self.blockfs.read_block(block_id))
+        data, token = self.blockfs.read_block(block_id, with_token=True)
+        arr.frombytes(data)
+        self.superblock_cache[superblock_id] = SuperblockCache(arr, token)
         return arr
 
     @check_types
     def write_superblock(self, superblock_id: int, bitmap: bitarray.bitarray):
         block_id = superblock_id * self.SUPERBLOCK_INTERVAL
-        self.blockfs.write_block(block_id, 0, bitmap.tobytes())
+        token = self.blockfs.write_block(block_id, 0, bitmap.tobytes(), with_token=True)
+        self.superblock_cache[superblock_id] = SuperblockCache(bitmap, token)
 
     @check_types
     def write_new_superblock(self, superblock_id: int):
@@ -122,6 +138,9 @@ class FileLevelFilesystem:
             total_size = self.blockfs.total_blocks()
             for superblock_id in itertools.count():
                 bitmap = self.read_superblock(superblock_id)
+                if bitmap.count(1) == 0:
+                    continue
+
                 for free_block in bitmap.itersearch(singleton_0_bitarray):
                     bitmap[free_block] = True
                     block_id = superblock_id * self.SUPERBLOCK_INTERVAL + free_block
@@ -284,9 +303,58 @@ class FileLevelFilesystem:
         except KeyError:
             pass
 
+        block_id = None
+        for offset in range(1, header_num):
+            try:
+                hcache = self.header_cache[(file_id, header_num - offset)]
+            except KeyError:
+                pass
+            else:
+                reload, _ = self.blockfs.block_version(hcache.block_id, hcache.token)
+                if not reload:
+                    start = header_num - offset
+                    hdata = hcache.hdata
+                    block_id = hcache.block_id
+                    break
+            try:
+                hcache = self.header_cache[(file_id, header_num + offset)]
+            except KeyError:
+                pass
+            else:
+                reload, _ = self.blockfs.block_version(hcache.block_id, hcache.token)
+                if not reload:
+                    start = header_num + offset
+                    hdata = hcache.hdata
+                    block_id = hcache.block_id
+                    break
+
+        with self.blockfs.lock_file(write=False):
+            if block_id is None:
+                start = 0
+                block_id = file_id
+                hdata = self.read_file_header(file_id, start, block_id)
+
+            print(header_num, start, hdata, self.read_file_header(file_id, start, block_id))
+
+            while start < header_num:
+                block_id = hdata.next_header
+                assert hdata.next_header
+                start += 1
+                print(start)
+                hdata = self.read_file_header(file_id, start, block_id)
+
+            while start > header_num:
+                block_id = hdata.prev_header
+                assert hdata.prev_header
+                start -= 1
+                hdata = self.read_file_header(file_id, start, block_id)
+
+        return block_id, hdata
+
+    @check_types
+    def read_file_header(self, file_id: int, header_num: int, block_id: int):
         if header_num:
             with self.blockfs.lock_file(write=False):
-                block_id = self.get_file_header(file_id, header_num - 1)[1].next_header
                 data, token = self.blockfs.read_block(block_id, with_token=True)
             data = self.unpack_file_continuation_header(data)
         else:
@@ -296,7 +364,7 @@ class FileLevelFilesystem:
             block_id = file_id
 
         self.header_cache[(file_id, header_num)] = HeaderCache(block_id, data, token)
-        return block_id, data
+        return data
 
     @check_types
     def write_file_header(self, file_id: int, header_num: int, data):

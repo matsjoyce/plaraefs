@@ -29,7 +29,6 @@ Requirements
  - [docopt](https://pypi.python.org/pypi/docopt)
  - [fusepy](https://pypi.python.org/pypi/fusepy)
  - [namedlist](https://pypi.python.org/pypi/namedlist)
- - [pylru](https://pypi.python.org/pypi/pylru)
 
 Optional:
 

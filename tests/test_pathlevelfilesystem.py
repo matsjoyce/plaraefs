@@ -25,19 +25,18 @@ def fs():
 
 
 def test_directory_lookup_simple(fs: PathLevelFilesystem):
-    assert fs.lookup(()) == fs.ROOT_FILE_ID
-    assert fs.lookup((b"a",)) is None
-    assert fs.lookup((b"b",)) is None
-    assert fs.lookup((b"c",)) is None
+    assert fs.search_directory(fs.ROOT_FILE_ID, b"a")[0] is None
+    assert fs.search_directory(fs.ROOT_FILE_ID, b"b")[0] is None
+    assert fs.search_directory(fs.ROOT_FILE_ID, b"c")[0] is None
 
     de = DirectoryEntry(b"a", fs.ROOT_FILE_ID + 1)
     fs.add_directory_entry(fs.ROOT_FILE_ID, de)
 
     assert ReadIterator(fs.filefs, fs.ROOT_FILE_ID, 0).read() == fs.pack_directory_entry(de)
 
-    assert fs.lookup((b"a",)) == fs.ROOT_FILE_ID + 1
-    assert fs.lookup((b"b",)) is None
-    assert fs.lookup((b"c",)) is None
+    assert fs.search_directory(fs.ROOT_FILE_ID, b"a")[0].file_id == fs.ROOT_FILE_ID + 1
+    assert fs.search_directory(fs.ROOT_FILE_ID, b"b")[0] is None
+    assert fs.search_directory(fs.ROOT_FILE_ID, b"c")[0] is None
 
     de2 = DirectoryEntry(b"b", fs.ROOT_FILE_ID + 2)
     fs.add_directory_entry(fs.ROOT_FILE_ID, de2)
@@ -45,38 +44,38 @@ def test_directory_lookup_simple(fs: PathLevelFilesystem):
     assert (ReadIterator(fs.filefs, fs.ROOT_FILE_ID, 0).read()
             == fs.pack_directory_entry(de) + fs.pack_directory_entry(de2))
 
-    assert fs.lookup((b"a",)) == fs.ROOT_FILE_ID + 1
-    assert fs.lookup((b"b",)) == fs.ROOT_FILE_ID + 2
-    assert fs.lookup((b"c",)) is None
+    assert fs.search_directory(fs.ROOT_FILE_ID, b"a")[0].file_id == fs.ROOT_FILE_ID + 1
+    assert fs.search_directory(fs.ROOT_FILE_ID, b"b")[0].file_id == fs.ROOT_FILE_ID + 2
+    assert fs.search_directory(fs.ROOT_FILE_ID, b"c")[0] is None
 
 
 def test_directory_lookup_overwrite(fs: PathLevelFilesystem):
     de = DirectoryEntry(b"a", fs.ROOT_FILE_ID + 1)
     fs.add_directory_entry(fs.ROOT_FILE_ID, de)
 
-    assert fs.lookup((b"a",)) == fs.ROOT_FILE_ID + 1
+    assert fs.search_directory(fs.ROOT_FILE_ID, b"a")[0].file_id == fs.ROOT_FILE_ID + 1
 
     de.file_id = fs.ROOT_FILE_ID + 2
 
     with pytest.raises(FileExistsError):
         fs.add_directory_entry(fs.ROOT_FILE_ID, de)
 
-    assert fs.lookup((b"a",)) == fs.ROOT_FILE_ID + 1
+    assert fs.search_directory(fs.ROOT_FILE_ID, b"a")[0].file_id == fs.ROOT_FILE_ID + 1
 
     fs.add_directory_entry(fs.ROOT_FILE_ID, de, overwrite=True)
 
-    assert fs.lookup((b"a",)) == fs.ROOT_FILE_ID + 2
+    assert fs.search_directory(fs.ROOT_FILE_ID, b"a")[0].file_id == fs.ROOT_FILE_ID + 2
 
 
 def test_directory_remove_simple(fs: PathLevelFilesystem):
     de = DirectoryEntry(b"a", fs.ROOT_FILE_ID + 1)
     fs.add_directory_entry(fs.ROOT_FILE_ID, de)
 
-    assert fs.lookup((b"a",)) == fs.ROOT_FILE_ID + 1
+    assert fs.search_directory(fs.ROOT_FILE_ID, b"a")[0].file_id == fs.ROOT_FILE_ID + 1
 
     fs.remove_directory_entry(fs.ROOT_FILE_ID, de.name)
 
-    assert fs.lookup((b"a",)) is None
+    assert fs.search_directory(fs.ROOT_FILE_ID, b"a")[0] is None
     assert ReadIterator(fs.filefs, fs.ROOT_FILE_ID, 0).read() == b""
 
 
@@ -90,7 +89,7 @@ def test_directory_remove(fs: PathLevelFilesystem):
 
     fs.remove_directory_entry(fs.ROOT_FILE_ID, b"b")
 
-    assert fs.lookup((b"b",)) is None
+    assert fs.search_directory(fs.ROOT_FILE_ID, b"b")[0] is None
     assert (ReadIterator(fs.filefs, fs.ROOT_FILE_ID, 0).read()
             == fs.pack_directory_entry(de_a) + fs.pack_directory_entry(de_c))
 

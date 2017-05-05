@@ -28,19 +28,6 @@ class PathLevelFilesystem:
         filefs.create_new_file(FileType.dir.value)
 
     @check_types
-    def lookup(self, path: tuple, checker=None):
-        if path == ():
-            if checker:
-                checker(self.ROOT_FILE_ID)
-            return self.ROOT_FILE_ID
-        parent = self.lookup(path[:-1])
-        data, _ = self.search_directory(parent, path[-1])
-        if data:
-            if checker:
-                checker(data.file_id)
-            return data.file_id
-
-    @check_types
     def unpack_directory_entry(self, data: bytes, offset: int=0):
         name, file_id = self.directory_entry_struct.unpack_from(data, offset)
         return DirectoryEntry(name.rstrip(b"\0"), file_id)

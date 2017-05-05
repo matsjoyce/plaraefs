@@ -2,13 +2,12 @@ import contextlib
 import os
 import pathlib
 import threading
-import pylru
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from . import locking
-from .utils import check_types
+from .utils import check_types, LRUDict
 
 
 class BlockLevelFilesystem:
@@ -40,7 +39,7 @@ class BlockLevelFilesystem:
         self.lock_file_locked = False
         self.lock_file_locked_write = False
 
-        self.block_cache = pylru.lrucache(1024)
+        self.block_cache = LRUDict(4024)
         self.unflushed_writes = {}
         self.locked_tokens = set()
 
@@ -115,7 +114,8 @@ class BlockLevelFilesystem:
         return block_id * self.PHYSICAL_BLOCK_SIZE + self.offset
 
     def total_blocks(self):
-        size = self.fname.stat().st_size - self.offset
+        with self.lock_file(write=False):
+            size = self.fname.stat().st_size - self.offset
         assert size % self.PHYSICAL_BLOCK_SIZE == 0
         return size // self.PHYSICAL_BLOCK_SIZE
 
