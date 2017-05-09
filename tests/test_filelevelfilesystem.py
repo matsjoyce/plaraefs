@@ -59,7 +59,7 @@ def test_allocate_blocks(fs: FileLevelFilesystem):
     bitmap_comp.setall(False)
     bitmap_comp[0] = True
 
-    assert bitmap == bitmap_comp
+    assert bitmap.tobytes() == bitmap_comp.tobytes()
 
     blocks = fs.allocate_blocks(10)
 
@@ -68,7 +68,7 @@ def test_allocate_blocks(fs: FileLevelFilesystem):
     bitmap = fs.read_superblock(0)
     bitmap_comp[1:11] = True
 
-    assert bitmap == bitmap_comp
+    assert bitmap.tobytes() == bitmap_comp.tobytes()
 
     fs.deallocate_blocks(blocks)
 
@@ -81,7 +81,7 @@ def test_allocate_blocks(fs: FileLevelFilesystem):
     bitmap_comp.setall(False)
     bitmap_comp[0] = True
 
-    assert bitmap == bitmap_comp
+    assert bitmap.tobytes() == bitmap_comp.tobytes()
 
 
 def test_create_new_file(fs: FileLevelFilesystem):

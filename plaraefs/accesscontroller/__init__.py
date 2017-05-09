@@ -1,8 +1,10 @@
 import abc
-import fuse
 
 
 class AccessController(abc.ABC):
+    def __init__(self):
+        self.fs = None
+
     @abc.abstractmethod
     def file_read(self, file):
         pass
@@ -54,6 +56,3 @@ class AccessController(abc.ABC):
     @abc.abstractmethod
     def xattr_remove(self, file, name):
         pass
-
-    def process_info(self):
-        return fuse.fuse_get_context()

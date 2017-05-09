@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 def wrapper(func):
     def w(self, **kwargs):
-        proc = os.readlink('/proc/{}/exe'.format(self.process_info()[2]))
+        proc = os.readlink('/proc/{}/exe'.format(self.fs.process_info()[2]))
         logger.debug(f"Access request from {proc}: {func.__name__}{kwargs}")
         ret = func(self, **kwargs)
         if not ret:

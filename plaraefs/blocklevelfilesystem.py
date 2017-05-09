@@ -22,6 +22,10 @@ class BlockLevelFilesystem:
     FS_EXT = ".plaraefs"
     BLOCK_ID_SIZE = 8
 
+    __slots__ = ["lock", "key", "offset", "fname", "_file", "backend", "block_reads",
+                 "block_writes", "lock_file_locked", "lock_file_locked_write", "block_cache",
+                 "unflushed_writes", "locked_tokens"]
+
     @check_types
     def __init__(self, fname, key: bytes, offset: int=0):
         self.lock = threading.RLock()
@@ -121,9 +125,11 @@ class BlockLevelFilesystem:
 
     @check_types
     def new_blocks(self, number):
+        if not number:
+            return []
         total_blocks = self.total_blocks()
         new_block_ids = list(range(total_blocks, total_blocks + number))
-        with self.lock_file(True) as f:
+        with self.lock_file(write=True) as f:
             f.seek(self.block_start(total_blocks))
             written = f.write(b"\0" * (self.PHYSICAL_BLOCK_SIZE * number))
 
@@ -137,7 +143,7 @@ class BlockLevelFilesystem:
         assert number <= total_blocks
 
         new_total_blocks = total_blocks - number
-        with self.lock_file(True) as f:
+        with self.lock_file(write=True) as f:
             for block_id in range(new_total_blocks, total_blocks):
                 self.unflushed_writes.pop(block_id, None)
             f.truncate(self.block_start(new_total_blocks))
@@ -151,7 +157,7 @@ class BlockLevelFilesystem:
 
         assert block_id < self.total_blocks()
         with self.lock:
-            with self.lock_file(False) as f:
+            with self.lock_file(write=False) as f:
                 f.seek(self.block_start(block_id))
                 token = f.read(self.IV_SIZE)
                 if token == self.UNINITALISED_IV:
@@ -169,7 +175,7 @@ class BlockLevelFilesystem:
         return (plain_data, token) if with_token else plain_data
 
     def flush_writes(self, only=None):
-        with self.lock_file(True) as f:
+        with self.lock_file(write=True) as f:
             rms = []
             for block_id, (data, token) in self.unflushed_writes.items():
                 if only and block_id not in only:
@@ -190,7 +196,7 @@ class BlockLevelFilesystem:
         if len(data) != self.LOGICAL_BLOCK_SIZE:
             new_token = self.new_token()
             data_from_end = self.LOGICAL_BLOCK_SIZE - offset - len(data)
-            with self.lock_file(True) as f:
+            with self.lock_file(write=True) as f:
                 old_data = self.read_block(block_id)
                 if old_data is None:
                     data_to_write = b"".join((b"\0" * offset, data, b"\0" * data_from_end))
@@ -207,7 +213,7 @@ class BlockLevelFilesystem:
         cipher_data = self.encrypt_block(data)
 
         with self.lock:
-            with self.lock_file(True) as f:
+            with self.lock_file(write=True) as f:
                 f.seek(self.block_start(block_id))
                 f.write(cipher_data)
 
@@ -230,7 +236,7 @@ class BlockLevelFilesystem:
 
         with self.lock:
             self.flush_writes([block_id1, block_id2])
-            with self.lock_file(True) as f:
+            with self.lock_file(write=True) as f:
                 f.seek(self.block_start(block_id1))
                 block_1_data = f.read(self.PHYSICAL_BLOCK_SIZE)
                 f.seek(self.block_start(block_id2))
@@ -251,7 +257,7 @@ class BlockLevelFilesystem:
         assert block_id < self.total_blocks()
         with self.lock:
             self.unflushed_writes.pop(block_id, None)
-            with self.lock_file(True) as f:
+            with self.lock_file(write=True) as f:
                 f.seek(self.block_start(block_id))
                 f.write(b"\0" * self.PHYSICAL_BLOCK_SIZE)
 

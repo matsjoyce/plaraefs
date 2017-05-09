@@ -1,11 +1,15 @@
 import enum
-import namedlist
+import attr
 import struct
 
 from .filelevelfilesystem import FileLevelFilesystem
 from .utils import check_types
 
-DirectoryEntry = namedlist.namedlist("DirectoryEntry", ("name", "file_id"))
+
+@attr.s(slots=True)
+class DirectoryEntry:
+    name = attr.ib()
+    file_id = attr.ib()
 
 
 class FileType(enum.Enum):
@@ -16,6 +20,8 @@ class FileType(enum.Enum):
 class PathLevelFilesystem:
     ROOT_FILE_ID = 1
     FILENAME_SIZE = 256
+
+    __slots__ = ["filefs", "DIRECTORY_ENTRY_SIZE", "directory_entry_struct"]
 
     def __init__(self, filefs: FileLevelFilesystem):
         self.filefs = filefs
@@ -34,7 +40,7 @@ class PathLevelFilesystem:
 
     @check_types
     def pack_directory_entry(self, entry: DirectoryEntry):
-        return self.directory_entry_struct.pack(*entry)
+        return self.directory_entry_struct.pack(entry.name, entry.file_id)
 
     @check_types
     def search_directory(self, file_id: int, name: bytes):

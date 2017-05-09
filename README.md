@@ -23,12 +23,12 @@ Requirements
 ------------
 
  - [Python 3.6+](https://www.python.org/) or [PyPy 3.5-v5.7.1+](http://pypy.org/)
- - [bitarray](https://pypi.python.org/pypi/bitarray) (PyPy requires that patch found [here](https://github.com/ilanschnell/bitarray/pull/47))
+ - [attrs](https://pypi.python.org/pypi/attrs)
  - [bcrypt](https://pypi.python.org/pypi/bcrypt)
+ - [cffi](https://pypi.python.org/pypi/cffi)
  - [cryptography](https://pypi.python.org/pypi/cryptography)
  - [docopt](https://pypi.python.org/pypi/docopt)
- - [fusepy](https://pypi.python.org/pypi/fusepy)
- - [namedlist](https://pypi.python.org/pypi/namedlist)
+ - [fuse3](https://github.com/libfuse/libfuse)
 
 Optional:
 

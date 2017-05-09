@@ -61,7 +61,7 @@ class WriteIterator(FileIterator):
         # TODO: For certain sizes this should be generated...
         blocks_to_write = list(self.blocks_to_write(flush=flush))
 
-        if not blocks_to_write:
+        if not blocks_to_write and not flush:
             return
 
         with self.fs.blockfs.lock_file(write=True):
