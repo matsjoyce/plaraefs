@@ -238,8 +238,7 @@ def test_truncate_size(fs: FileLevelFilesystem):
     file_id = fs.create_new_file(0)
     assert file_id == 1
 
-    writer = fs.writer(file_id)
-    writer.write(b"abcdef" * 2 ** 12, flush=True)
+    fs.write(file_id, b"abcdef" * 2 ** 12)
 
     assert fs.num_file_blocks(file_id) == 7
 
@@ -247,7 +246,7 @@ def test_truncate_size(fs: FileLevelFilesystem):
 
     assert fs.num_file_blocks(file_id) == 4
     assert fs.get_file_header(file_id, 0)[1].size == 6 * 2 ** 11
-    assert fs.reader(file_id).read() == b"abcdef" * 2 ** 11
+    assert fs.read(file_id) == b"abcdef" * 2 ** 11
 
 
 def test_delete(fs: FileLevelFilesystem):

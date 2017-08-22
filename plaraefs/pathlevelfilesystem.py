@@ -51,12 +51,10 @@ class PathLevelFilesystem:
             return None, 0
         start = 0
         end = header.size // self.DIRECTORY_ENTRY_SIZE
-        reader = self.filefs.reader(file_id, 0)
         # Binary search
         while True:
             middle = (start + end) // 2
-            reader.seek(middle * self.DIRECTORY_ENTRY_SIZE)
-            entry = self.unpack_directory_entry(reader.read(self.DIRECTORY_ENTRY_SIZE))
+            entry = self.unpack_directory_entry(self.filefs.read(file_id, self.DIRECTORY_ENTRY_SIZE, middle * self.DIRECTORY_ENTRY_SIZE))
             if entry.name == name:
                 return entry, middle * self.DIRECTORY_ENTRY_SIZE
             elif entry.name < name:
@@ -72,23 +70,19 @@ class PathLevelFilesystem:
         if existing_entry:
             if not overwrite:
                 raise FileExistsError()
-            writer = self.filefs.writer(file_id, position)
-            writer.write(self.pack_directory_entry(entry), flush=True)
+            self.filefs.write(file_id, self.pack_directory_entry(entry), position)
             return
-        entries_after = self.filefs.reader(file_id, position).read()
-        writer = self.filefs.writer(file_id, position)
-        writer.write(self.pack_directory_entry(entry))
-        writer.write(entries_after, flush=True)
+        entries_after = self.filefs.read(file_id, -1, position)
+        self.filefs.write(file_id, self.pack_directory_entry(entry) + entries_after, position)
 
     @check_types
     def remove_directory_entry(self, file_id: int, name: bytes):
         existing_entry, position = self.search_directory(file_id, name)
         if not existing_entry:
             raise FileNotFoundError()
-        entries_after = self.filefs.reader(file_id, position + self.DIRECTORY_ENTRY_SIZE).read()
+        entries_after = self.filefs.read(file_id, -1, position + self.DIRECTORY_ENTRY_SIZE)
         self.filefs.truncate_file_size(file_id, position + len(entries_after))
-        writer = self.filefs.writer(file_id, position)
-        writer.write(entries_after, flush=True)
+        self.filefs.write(file_id, entries_after, position)
 
     @check_types
     def directory_entries(self, file_id: int):
@@ -96,6 +90,6 @@ class PathLevelFilesystem:
         assert header.file_type == FileType.dir.value
         assert header.size % self.DIRECTORY_ENTRY_SIZE == 0
         num_entries = header.size // self.DIRECTORY_ENTRY_SIZE
-        data = self.filefs.reader(file_id).read()
+        data = self.filefs.read(file_id)
         for i in range(num_entries):
             yield self.unpack_directory_entry(data, i * self.DIRECTORY_ENTRY_SIZE)

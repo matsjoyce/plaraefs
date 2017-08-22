@@ -1,10 +1,9 @@
 import itertools
 import struct
 import attr
+import sys
 
 from .blocklevelfilesystem import BlockLevelFilesystem
-from .read_iterator import ReadIterator
-from .write_iterator import WriteIterator
 from .utils import check_types, LRUDict, BitArray
 
 
@@ -157,16 +156,13 @@ class FileLevelFilesystem:
 
     def superblock_generator(self):
         searched_superblocks = set()
-        for superblock_id in list(self.superblock_cache.keys()):
-            try:
-                cache = self.superblock_cache[superblock_id]
-                block_id = superblock_id * self.SUPERBLOCK_INTERVAL
-                reload, _ = self.blockfs.block_version(block_id, cache.token)
-                if not reload:
-                    searched_superblocks.add(superblock_id)
-                    yield superblock_id, cache.data
-            except KeyError:
-                pass
+        for superblock_id in self.superblock_cache.keys():
+            cache = self.superblock_cache[superblock_id]
+            block_id = superblock_id * self.SUPERBLOCK_INTERVAL
+            reload, _ = self.blockfs.block_version(block_id, cache.token)
+            if not reload:
+                searched_superblocks.add(superblock_id)
+                yield superblock_id, cache.data
         for superblock_id in itertools.count():
             if superblock_id not in searched_superblocks:
                 yield superblock_id, self.read_superblock(superblock_id)
@@ -191,8 +187,8 @@ class FileLevelFilesystem:
                     if not number:
                         break
 
+                self.write_superblock(superblock_id, bitmap)
                 if new_blocks:
-                    self.write_superblock(superblock_id, bitmap)
                     xs = self.blockfs.new_blocks(new_blocks)
                     assert blocks[-new_blocks:] == xs, (xs, blocks)
                     new_blocks = 0
@@ -477,12 +473,49 @@ class FileLevelFilesystem:
                                                                                       data, with_token=True)
 
     @check_types
-    def reader(self, file_id: int, start: int=0):
-        return ReadIterator(self, file_id, start)
+    def read(self, file_id: int, size: int=-1, start: int=0):
+        with self.blockfs.lock_file(write=False):
+            chunks = []
+            total_file_size = self.get_file_header(file_id, 0)[1].size
+            start = min(start, total_file_size)
+            if size < 0:
+                size = total_file_size - start
+            else:
+                size = min(size, total_file_size - start)
+
+            while size:
+                block_num, offset = self.block_from_offset(start)
+                data = self.read_file_data(file_id, block_num)
+                chunk = data[offset:offset + size]
+                chunks.append(chunk)
+                size -= len(chunk)
+                start += len(chunk)
+        return b"".join(chunks)
 
     @check_types
-    def writer(self, file_id: int, start: int=0):
-        return WriteIterator(self, file_id, start)
+    def write(self, file_id: int, data: bytes, start: int=0):
+        with self.blockfs.lock_file(write=True):
+            _, main_header = self.get_file_header(file_id, 0)
+            total_file_size = main_header.size
+            total_blocks = self.num_file_blocks(file_id)
+            new_file_size = max(start + len(data), total_file_size)
+
+            if total_file_size != new_file_size:
+                main_header.size = new_file_size
+                self.write_file_header(file_id, 0, main_header)
+
+                block_num, offset = self.block_from_offset(new_file_size)
+                if block_num >= total_blocks:
+                    self.extend_file_blocks(file_id, block_num + 1, total_blocks - 1)
+
+            pos = 0
+            while pos < len(data):
+                block_num, offset = self.block_from_offset(start + pos)
+
+                block_size = self.file_data_in_block(block_num)
+                new_pos = pos + block_size - offset
+                self.write_file_data(file_id, block_num, offset, data[pos:new_pos])
+                pos = new_pos
 
     @check_types
     def pack_xattr_block(self, next_block: int, data: bytes):

@@ -5,7 +5,6 @@ import os
 from plaraefs.blocklevelfilesystem import BlockLevelFilesystem
 from plaraefs.filelevelfilesystem import FileLevelFilesystem
 from plaraefs.pathlevelfilesystem import PathLevelFilesystem, DirectoryEntry
-from plaraefs.read_iterator import ReadIterator
 
 
 @pytest.fixture()
@@ -32,7 +31,7 @@ def test_directory_lookup_simple(fs: PathLevelFilesystem):
     de = DirectoryEntry(b"a", fs.ROOT_FILE_ID + 1)
     fs.add_directory_entry(fs.ROOT_FILE_ID, de)
 
-    assert ReadIterator(fs.filefs, fs.ROOT_FILE_ID, 0).read() == fs.pack_directory_entry(de)
+    assert fs.filefs.read(fs.ROOT_FILE_ID) == fs.pack_directory_entry(de)
 
     assert fs.search_directory(fs.ROOT_FILE_ID, b"a")[0].file_id == fs.ROOT_FILE_ID + 1
     assert fs.search_directory(fs.ROOT_FILE_ID, b"b")[0] is None
@@ -41,8 +40,7 @@ def test_directory_lookup_simple(fs: PathLevelFilesystem):
     de2 = DirectoryEntry(b"b", fs.ROOT_FILE_ID + 2)
     fs.add_directory_entry(fs.ROOT_FILE_ID, de2)
 
-    assert (ReadIterator(fs.filefs, fs.ROOT_FILE_ID, 0).read()
-            == fs.pack_directory_entry(de) + fs.pack_directory_entry(de2))
+    assert fs.filefs.read(fs.ROOT_FILE_ID) == fs.pack_directory_entry(de) + fs.pack_directory_entry(de2)
 
     assert fs.search_directory(fs.ROOT_FILE_ID, b"a")[0].file_id == fs.ROOT_FILE_ID + 1
     assert fs.search_directory(fs.ROOT_FILE_ID, b"b")[0].file_id == fs.ROOT_FILE_ID + 2
@@ -76,7 +74,7 @@ def test_directory_remove_simple(fs: PathLevelFilesystem):
     fs.remove_directory_entry(fs.ROOT_FILE_ID, de.name)
 
     assert fs.search_directory(fs.ROOT_FILE_ID, b"a")[0] is None
-    assert ReadIterator(fs.filefs, fs.ROOT_FILE_ID, 0).read() == b""
+    assert fs.filefs.read(fs.ROOT_FILE_ID) == b""
 
 
 def test_directory_remove(fs: PathLevelFilesystem):
@@ -90,15 +88,14 @@ def test_directory_remove(fs: PathLevelFilesystem):
     fs.remove_directory_entry(fs.ROOT_FILE_ID, b"b")
 
     assert fs.search_directory(fs.ROOT_FILE_ID, b"b")[0] is None
-    assert (ReadIterator(fs.filefs, fs.ROOT_FILE_ID, 0).read()
-            == fs.pack_directory_entry(de_a) + fs.pack_directory_entry(de_c))
+    assert fs.filefs.read(fs.ROOT_FILE_ID) == fs.pack_directory_entry(de_a) + fs.pack_directory_entry(de_c)
 
     with pytest.raises(FileNotFoundError):
         fs.remove_directory_entry(fs.ROOT_FILE_ID, b"b")
 
     fs.remove_directory_entry(fs.ROOT_FILE_ID, b"c")
 
-    assert ReadIterator(fs.filefs, fs.ROOT_FILE_ID, 0).read() == fs.pack_directory_entry(de_a)
+    assert fs.filefs.read(fs.ROOT_FILE_ID) == fs.pack_directory_entry(de_a)
 
 
 def test_list_directory(fs: PathLevelFilesystem):

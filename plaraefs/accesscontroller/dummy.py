@@ -36,7 +36,7 @@ class DummyAccessController(AccessController):
 
     @wrapper
     def dir_lookup(self, dir, name, file):
-        return name != "f.py"
+        return True
 
     @wrapper
     def dir_add_file(self, dir, name):

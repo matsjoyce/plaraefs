@@ -50,16 +50,20 @@ libfuse = ffi.verify(
 
 
 class FUSEFilesystem:
-    def __init__(self, fname, accesscontroller: AccessController):
+    def __init__(self, fname, accesscontroller: AccessController, debug=False):
         self.fname = pathlib.Path(fname)
         self.salt = None
         self.password = getpass.getpass().encode()
         self.key = None
         self.accesscontroller = accesscontroller
         self.accesscontroller.fs = self
+        self.debug = debug
 
-    def mount(self, mountpoint):
-        args = ["fuse", "-f", "-s", "-o", f"fsname=plaraefs", str(mountpoint)]
+    def mount(self, mount_point):
+        self.mount_point = mount_point
+        args = ["fuse", "-f", "-o", f"fsname=plaraefs", "-o", "allow_other", str(mount_point)]
+        if self.debug:
+            args.append("-d")
         argv = [ffi.new("char[]", arg.encode()) for arg in args]
         fuse_ops = ffi.new("struct fuse_operations*")
 
@@ -112,19 +116,23 @@ class FUSEFilesystem:
             return ret
         except PermissionError as e:
             val = e.args[0] if e.args else EACCES
-            logger.warning(f"<- {op} Permission denied with [{os.strerror(val)}]")
+            logger.warning(f"<- {op} {repr(args)} Permission denied with [{os.strerror(val)}]")
             return -val
         except OSError as e:
             val = e.args[0] if e.args else EACCES
-            logger.debug(f"<- {op} [{os.strerror(val)}]")
+            logger.debug(f"<- {op} {repr(args)} [{os.strerror(val)}]")
             return -val
         except Exception as e:
-            logger.error(f"<- {op} [Unhandled exception]", exc_info=True)
+            logger.error(f"<- {op} {repr(args)} [Unhandled exception]", exc_info=True)
             return -EACCES
 
     def init(self, info, config):
         initialise = not self.fname.exists()
         if initialise:
+            password2 = getpass.getpass("Creating new filesystem, repeat password: ").encode()
+            if self.password != password2:
+                print("Passwords do not match!")
+                raise RuntimeError()
             self.salt = bcrypt.gensalt(15)
         elif self.salt is None:
             with self.fname.open("rb") as f:
@@ -269,6 +277,8 @@ class FUSEFilesystem:
         self.access_violation(self.accesscontroller.xattr_list(file=file_id))
         value = b"\0".join(i for i in self.filefs.read_xattrs(file_id)
                            if self.accesscontroller.xattr_lookup(file=file_id, name=i))
+        if value:
+            value += b"\0"
 
         if size:
             if len(value) > size:
@@ -407,9 +417,11 @@ class FUSEFilesystem:
 
     def setxattr(self, path, name, value, size, options):
         file_id = self.lookup(ffi.string(path))
-        self.access_violation(self.accesscontroller.xattr_set(file=file_id))
+        name = ffi.string(name)
+        value = ffi.buffer(value, size)[:]
+        self.access_violation(self.accesscontroller.xattr_set(file=file_id, name=name, value=value))
         try:
-            self.filefs.set_xattr(file_id, name, ffi.buffer(value, size)[:],
+            self.filefs.set_xattr(file_id, name, value,
                                   replace_only=bool(options & XATTR_REPLACE),
                                   create_only=bool(options & XATTR_CREATE))
         except KeyAlreadyExists:

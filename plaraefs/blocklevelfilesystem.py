@@ -43,7 +43,7 @@ class BlockLevelFilesystem:
         self.lock_file_locked = False
         self.lock_file_locked_write = False
 
-        self.block_cache = LRUDict(4024)
+        self.block_cache = LRUDict(2048)
         self.unflushed_writes = {}
         self.locked_tokens = set()
 
