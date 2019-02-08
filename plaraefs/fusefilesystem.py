@@ -301,6 +301,7 @@ class FUSEFilesystem:
 
     def open(self, path, info):
         file_id = self.lookup(ffi.string(path))
+        logger.debug(hex(info.flags))
         if info.flags & 3 == os.O_RDONLY:
             self.access_violation(self.accesscontroller.file_read(file=file_id))
         elif info.flags & 3 == os.O_WRONLY:
@@ -310,6 +311,9 @@ class FUSEFilesystem:
             self.access_violation(self.accesscontroller.file_write(file=file_id))
         if self.filefs.get_file_header(file_id, 0)[1].file_type != FileType.file.value:
             raise OSError(EISDIR)
+        if info.flags & os.O_TRUNC:
+            self.access_violation(self.accesscontroller.file_write(file=file_id))
+            self.filefs.truncate_file_size(file_id, 0)
         info.fh = file_id
         return 0
 
@@ -324,7 +328,7 @@ class FUSEFilesystem:
     def read(self, path, buf, size, offset, info):
         file_id = self.lookup(ffi.string(path), info)
         self.access_violation(self.accesscontroller.file_read(file=file_id))
-        data = self.filefs.reader(file_id, offset).read(size)
+        data = self.filefs.read(file_id, size, offset)
         buf = ffi.buffer(buf, size)
         buf[:len(data)] = data
         return len(data)
@@ -473,5 +477,5 @@ class FUSEFilesystem:
         file_id = self.lookup(ffi.string(path), info)
         self.access_violation(self.accesscontroller.file_write(file=file_id))
         buf = ffi.buffer(buf, size)
-        self.filefs.writer(file_id, offset).write(buf[:size], flush=True)
+        self.filefs.write(file_id, buf[:size], offset)
         return size

@@ -712,6 +712,23 @@ struct fuse_operations {
 	 */
 	int (*fallocate) (const char *, int, off_t, off_t,
 			  struct fuse_file_info *);
+
+        /**
+         * Copy a range of data from one file to another
+         *
+         * Performs an optimized copy between two file descriptors without the
+         * additional cost of transferring data through the FUSE kernel module
+         * to user space (glibc) and then back into the FUSE filesystem again.
+         *
+         * In case this method is not implemented, glibc falls back to reading
+         * data from the source and writing to the destination. Effectively
+         * doing an inefficient copy of the data.
+         */
+        ssize_t (*copy_file_range) (const char *path_in,
+                                    struct fuse_file_info *fi_in,
+                                    off_t offset_in, const char *path_out,
+                                    struct fuse_file_info *fi_out,
+                                    off_t offset_out, size_t size, int flags);
 };
 
 /** Extra context that may be needed by some filesystems

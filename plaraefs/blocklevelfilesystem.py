@@ -153,6 +153,8 @@ class BlockLevelFilesystem:
         # return None if the block is not initialised
         cache_data, cache_token = self.unflushed_writes.get(block_id, self.block_cache.get(block_id, (None, None)))
         if self.lock_file_locked and cache_token in self.locked_tokens:
+            if cache_data is None:
+                print("A")
             return (cache_data, cache_token) if with_token else cache_data
 
         assert block_id < self.total_blocks()
@@ -163,6 +165,8 @@ class BlockLevelFilesystem:
                 if token == self.UNINITALISED_IV:
                     return None
                 elif token == cache_token:
+                    if cache_data is None:
+                        print("B")
                     return (cache_data, cache_token) if with_token else cache_data
                 cipher_data = token + f.read(self.PHYSICAL_BLOCK_SIZE - self.IV_SIZE)
 
@@ -172,6 +176,8 @@ class BlockLevelFilesystem:
             if self.lock_file_locked:
                 self.locked_tokens.add(token)
         self.block_reads += 1
+        if plain_data is None:
+            print("A")
         return (plain_data, token) if with_token else plain_data
 
     def flush_writes(self, only=None):
